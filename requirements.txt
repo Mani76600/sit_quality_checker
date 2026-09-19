@@ -1,0 +1,5 @@
+streamlit>=1.32
+pandas>=2.0
+pytest>=7.0
+fpdf2>=2.7
+py7zr>=0.20

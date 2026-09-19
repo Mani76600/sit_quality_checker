@@ -1,0 +1,15 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+
+# Test archives dropped in here during development - never commit SIT-shaped
+# test data to the repo, even accidentally.
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2

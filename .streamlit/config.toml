@@ -1,0 +1,9 @@
+[server]
+# Max upload size in MB, raised well above typical output folder sizes
+# (some run 15GB+) since this app always runs the complete, non-sampled
+# check - never a reduced/partial one - regardless of how long that takes.
+# IMPORTANT: this setting only controls the Streamlit app itself. Free/
+# shared hosts (e.g. Streamlit Community Cloud) generally enforce their own,
+# lower platform-level request-size and resource limits that this config
+# cannot override - see README.md for what hosting this actually needs.
+maxUploadSize = 20000
