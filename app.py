@@ -53,9 +53,20 @@ def _user_guide_download_button(key: str) -> None:
         help="A plain-language, step-by-step guide to using this tool.",
     )
 
-st.set_page_config(page_title="SIT Output Quality Checker (Web)", layout="wide")
+st.set_page_config(page_title="SIT Output Quality Checker", layout="wide")
+
+# Streamlit's file_uploader auto-generates a "<size> per file - <types>" line
+# under the drop zone with no parameter to customize it. Hide that built-in
+# line and show our own accepted-formats caption instead (file types only,
+# no size limit called out - the size cap is a technical config detail, not
+# something a user needs to see every time).
+st.markdown(
+    '<style>[data-testid="stFileUploaderDropzoneInstructions"] { display: none; }</style>',
+    unsafe_allow_html=True,
+)
 
 UPLOAD_TYPES = ["zip", "7z", "tar", "gz", "tgz", "bz2"]
+ARCHIVE_ACCEPTED_FORMATS = "Accepted formats: .zip, .7z, .tar, .tar.gz, .tgz, .tar.bz2"
 ARCHIVE_HELP = (
     "Supported: .zip, .7z, .tar, .tar.gz, .tgz, .tar.bz2. "
     ".rar is not supported here (it needs a system tool this host doesn't have) - "
@@ -108,11 +119,20 @@ def _clear_all_uploaded_data() -> None:
 
 
 def page_run_checks() -> None:
-    st.title("SIT Output Quality Checker (Web)")
+    st.title("SIT Output Quality Checker")
     st.write(
         "Upload your output folder as a single archive to validate it against the full "
         "pipeline output checklist - same checks as the desktop version, just delivered "
         "by upload instead of a local folder path."
+    )
+    st.caption(
+        "Extraction time (not checking time) is what mostly determines how long this "
+        "takes, and it scales with the number of files in your archive, not its total "
+        "size. In our own testing, a 93MB archive containing 75,055 individual files "
+        "took about 4-5 minutes just to extract, while checking that same content only "
+        "took about 54 seconds. So if an upload feels slow, it's almost certainly still "
+        "extracting - once that finishes, the checks themselves run quickly regardless "
+        "of folder size."
     )
     st.caption(
         "Your upload is extracted to a private, temporary area on this server for the "
@@ -128,6 +148,7 @@ def page_run_checks() -> None:
         _user_guide_download_button(key="dl_guide_sidebar")
         st.divider()
         uploaded = st.file_uploader("Output folder archive", type=UPLOAD_TYPES, help=ARCHIVE_HELP)
+        st.caption(ARCHIVE_ACCEPTED_FORMATS)
         threshold = st.number_input(
             "context_output_normalized ratio threshold (records / total docs)",
             min_value=0.0, value=1.0, step=0.1,
@@ -211,13 +232,16 @@ def page_reference_completeness() -> None:
     )
     packs_archive = st.file_uploader("sit_packs archive", type=UPLOAD_TYPES, key="ref_packs",
                                       help=ARCHIVE_HELP)
+    st.caption(ARCHIVE_ACCEPTED_FORMATS)
     specs_archive = st.file_uploader("SIT Specs archive (optional)", type=UPLOAD_TYPES,
                                       key="ref_specs", help=ARCHIVE_HELP)
+    st.caption(ARCHIVE_ACCEPTED_FORMATS)
     mce_json = st.file_uploader("213 All MCE Keywords sit_keyword_list.json (optional)",
                                  type=["json"], key="ref_mce",
                                  help="The master keyword catalogue - if given, it's also used to "
                                       "confirm language coverage for a specific SIT below, since it "
                                       "records language as a readable name rather than a locale code.")
+    st.caption("Accepted format: .json")
 
     sit_packs_dir = _get_or_extract(packs_archive, "ref_packs")
     sit_specs_dir = _get_or_extract(specs_archive, "ref_specs")
