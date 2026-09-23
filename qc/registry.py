@@ -42,6 +42,31 @@ def _load_check_modules() -> None:
     _LOADED = True
 
 
+def _folder_set_counts(fs) -> dict:
+    data, err = jsonio.read_json_cached(fs.export_summary)
+    counts = data.get("counts", {}) if not err and isinstance(data, dict) else {}
+    counts = counts if isinstance(counts, dict) else {}
+    return {
+        "positive": counts.get("positive", counts.get("Positive")),
+        "negative": counts.get("negative", counts.get("Negative")),
+        "total": counts.get("total", counts.get("Total")),
+    }
+
+
+def _read_doc_counts(ctx: VersionContext) -> dict:
+    """Small summary (total / Agreements pos-neg / Disagreements pos-neg)
+    read once per run from each folder set's export_summary.json, shown as
+    a quick-glance highlight right under the report header - independent
+    of, and much cheaper than, the full reconciliation checks that also
+    read this file."""
+    agreements = _folder_set_counts(ctx.agreements)
+    disagreements = _folder_set_counts(ctx.disagreements)
+    total = agreements["total"]
+    if total is None and agreements["positive"] is not None and agreements["negative"] is not None:
+        total = agreements["positive"] + agreements["negative"]
+    return {"total": total, "agreements": agreements, "disagreements": disagreements}
+
+
 def run_all(ctx: VersionContext, options: dict | None = None,
             report_progress: Reporter = null_reporter) -> RunReport:
     _load_check_modules()
@@ -56,7 +81,7 @@ def run_all(ctx: VersionContext, options: dict | None = None,
     clear_scan_cache()
     from qc.checks.inverted_index_scan import clear_scan_cache as clear_inverted_index_cache
     clear_inverted_index_cache()
-    report = RunReport(label=ctx.label, version_dir=str(ctx.version_dir))
+    report = RunReport(label=ctx.label, version_dir=str(ctx.version_dir), doc_counts=_read_doc_counts(ctx))
     report_progress(f"Starting checks for: {ctx.label} ({len(_CHECKS)} check functions registered)")
     for i, (category, fn) in enumerate(_CHECKS, start=1):
         report_progress(f"[{i}/{len(_CHECKS)}] Running {fn.__module__}.{fn.__name__} ({category}) ...")

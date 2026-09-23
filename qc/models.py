@@ -53,6 +53,7 @@ class RunReport:
     label: str  # human readable identifier, e.g. "Sweden National ID / Swedish / Version_20260915_2135"
     version_dir: str
     results: list[CheckResult] = field(default_factory=list)
+    doc_counts: dict = field(default_factory=dict)  # see qc.registry.run_all's population of this
 
     def add(self, results: list[CheckResult] | CheckResult) -> None:
         if isinstance(results, CheckResult):
@@ -78,6 +79,7 @@ class RunReport:
             "label": self.label,
             "version_dir": self.version_dir,
             "counts": self.counts(),
+            "doc_counts": self.doc_counts,
             "results": [r.to_dict() for r in self.results],
         }
 

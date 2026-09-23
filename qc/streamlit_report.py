@@ -36,6 +36,33 @@ def worst_status(results) -> tuple[str, dict]:
     return next((s for s in STATUS_ORDER if cat_counts[s]), Status.PASS.value), cat_counts
 
 
+_LEADING_NUMBER_RE = re.compile(r"^\d+[a-z]?(?:-\d+)?\.\s*")
+
+
+def _display_category(category: str) -> str:
+    """User-facing category name with any leading checklist-item number
+    stripped ("3. context_output_normalized" -> "context_output_normalized")
+    - now that every category is a clickable jump target, the number no
+    longer carries any navigational meaning and just reads as noise.
+    Sorting/anchors/grouping still use the raw category string."""
+    return _LEADING_NUMBER_RE.sub("", category)
+
+
+def _effective_worst_and_passed(cat_counts: dict) -> tuple[str, int]:
+    """INFO-only results read as noise next to real problems, so they're
+    folded into "passed" everywhere they're summarized: a category (or a
+    whole run) only ever shows as FAIL/WARN/PASS, never as its own
+    separate INFO state - real FAIL/WARN keep their own distinct counts."""
+    if cat_counts[Status.FAIL.value]:
+        worst = Status.FAIL.value
+    elif cat_counts[Status.WARN.value]:
+        worst = Status.WARN.value
+    else:
+        worst = Status.PASS.value
+    passed = cat_counts[Status.PASS.value] + cat_counts[Status.INFO.value]
+    return worst, passed
+
+
 def _slugify(*parts: str) -> str:
     """Stable, HTML-id-safe anchor slug for a report/category so a link can
     jump straight to it - same rules on both ends (link + target), so
@@ -59,48 +86,60 @@ def render_report(report: RunReport) -> None:
     st.subheader(report.label)
     st.caption(str(report.version_dir))
 
+    dc = report.doc_counts or {}
+    if dc:
+        ag, da = dc.get("agreements", {}), dc.get("disagreements", {})
+        hi_cols = st.columns(3)
+        hi_cols[0].metric("Total documents", dc.get("total") if dc.get("total") is not None else "—")
+        hi_cols[1].metric("Agreements", f"{ag.get('positive', '—')} pos / {ag.get('negative', '—')} neg")
+        hi_cols[2].metric("Disagreements", f"{da.get('positive', '—')} pos / {da.get('negative', '—')} neg")
+
     grouped = report.by_category()
     ordered_categories = sorted(grouped, key=category_sort_key)
     cat_anchor = {category: _slugify("run", report.version_dir, "cat", category)
                   for category in ordered_categories}
+    cat_effective = {category: _effective_worst_and_passed(worst_status(grouped[category])[1])
+                      for category in ordered_categories}
 
     n_fail, n_warn = counts.get("FAIL", 0), counts.get("WARN", 0)
     if n_fail:
         st.error(f"❌ {n_fail} check(s) failed — needs fixes before this output ships. "
                  f"See the checklist below for exactly which ones.")
-        failed_cats = [c for c in ordered_categories if worst_status(grouped[c])[0] == Status.FAIL.value]
+        failed_cats = [c for c in ordered_categories if cat_effective[c][0] == Status.FAIL.value]
         links = " &nbsp;·&nbsp; ".join(
-            f'<a href="#{cat_anchor[c]}">❌ {c}</a>' for c in failed_cats)
+            f'<a href="#{cat_anchor[c]}">❌ {_display_category(c)}</a>' for c in failed_cats)
         st.markdown(f"**Jump to failed check(s):** {links}", unsafe_allow_html=True)
     elif n_warn:
         st.warning(f"⚠️ All mandatory checks passed, but {n_warn} item(s) need a human look "
                    f"(warnings) — see below.")
-        warn_cats = [c for c in ordered_categories if worst_status(grouped[c])[0] == Status.WARN.value]
+        warn_cats = [c for c in ordered_categories if cat_effective[c][0] == Status.WARN.value]
         links = " &nbsp;·&nbsp; ".join(
-            f'<a href="#{cat_anchor[c]}">⚠️ {c}</a>' for c in warn_cats)
+            f'<a href="#{cat_anchor[c]}">⚠️ {_display_category(c)}</a>' for c in warn_cats)
         st.markdown(f"**Jump to warning(s):** {links}", unsafe_allow_html=True)
     else:
         st.success("✅ Every quality check passed for this run.")
 
-    cols = st.columns(4)
-    for col, status in zip(cols, STATUS_ORDER):
-        col.metric(f"{STATUS_ICON[status]} {status}", counts.get(status, 0))
+    cols = st.columns(2)
+    cols[0].metric(f"{STATUS_ICON[Status.FAIL.value]} FAIL", n_fail)
+    cols[1].metric(f"{STATUS_ICON[Status.PASS.value]} PASS",
+                    counts.get("PASS", 0) + counts.get("INFO", 0))
 
     st.markdown("#### Checklist at a glance")
     st.caption("Click a checklist item to jump straight to it in the Details section below.")
     table_rows = []
     for category in ordered_categories:
         results = grouped[category]
-        worst, cat_counts = worst_status(results)
+        _, cat_counts = worst_status(results)
+        worst, eff_passed = cat_effective[category]
         total = len(results)
-        bits = [f"{cat_counts[Status.PASS.value]}/{total} passed"]
+        bits = [f"{eff_passed}/{total} passed"]
         if cat_counts[Status.FAIL.value]:
             bits.append(f"{cat_counts[Status.FAIL.value]} FAILED")
         if cat_counts[Status.WARN.value]:
             bits.append(f"{cat_counts[Status.WARN.value]} warning(s)")
         table_rows.append(
             f'<tr><td style="text-align:center">{STATUS_ICON[worst]}</td>'
-            f'<td><a href="#{cat_anchor[category]}">{category}</a></td>'
+            f'<td><a href="#{cat_anchor[category]}">{_display_category(category)}</a></td>'
             f'<td>{", ".join(bits)}</td></tr>')
     st.markdown(
         '<table style="width:100%; border-collapse: collapse;">'
@@ -141,13 +180,22 @@ def render_report(report: RunReport) -> None:
     st.markdown("#### Details (categories with a failure or warning are expanded automatically)")
     for category in ordered_categories:
         results = grouped[category]
-        worst, cat_counts = worst_status(results)
-        badge = " ".join(f"{STATUS_ICON[s]}{cat_counts[s]}" for s in STATUS_ORDER if cat_counts[s])
+        _, cat_counts = worst_status(results)
+        worst, eff_passed = cat_effective[category]
+        badge_bits = []
+        if cat_counts[Status.FAIL.value]:
+            badge_bits.append(f"{STATUS_ICON[Status.FAIL.value]}{cat_counts[Status.FAIL.value]}")
+        if cat_counts[Status.WARN.value]:
+            badge_bits.append(f"{STATUS_ICON[Status.WARN.value]}{cat_counts[Status.WARN.value]}")
+        if eff_passed:
+            badge_bits.append(f"{STATUS_ICON[Status.PASS.value]}{eff_passed}")
+        badge = " ".join(badge_bits)
         needs_attention = worst in (Status.FAIL.value, Status.WARN.value)
         _anchor(cat_anchor[category])
-        with st.expander(f"{STATUS_ICON[worst]} {category}  —  {badge}", expanded=needs_attention):
-            actionable = [r for r in results if r.status != Status.PASS]
-            passed = [r for r in results if r.status == Status.PASS]
+        with st.expander(f"{STATUS_ICON[worst]} {_display_category(category)}  —  {badge}",
+                          expanded=needs_attention):
+            actionable = [r for r in results if r.status in (Status.FAIL, Status.WARN)]
+            passed = [r for r in results if r.status in (Status.PASS, Status.INFO)]
 
             for r in actionable:
                 st.markdown(f"**{STATUS_ICON[r.status.value]} [{r.item_ref}] {r.title}**"
@@ -178,14 +226,14 @@ def render_run_all_summary_table(reports) -> None:
     st.caption("Click a run to jump straight to its full report below.")
     header_cells = "".join(
         f'<th style="text-align:left; padding:4px 8px; border-bottom:1px solid rgba(128,128,128,0.4)">{h}</th>'
-        for h in ["Verdict", "Run", *STATUS_ORDER])
+        for h in ["Verdict", "Run", f"{STATUS_ICON[Status.FAIL.value]} FAIL", f"{STATUS_ICON[Status.PASS.value]} PASS"])
     body_rows = []
     for rep in reports:
         c = rep.counts()
         verdict = ("❌ Needs fixes" if c.get("FAIL")
                    else ("⚠️ Review warnings" if c.get("WARN") else "✅ Clean"))
         anchor = _slugify("run", rep.version_dir)
-        count_cells = "".join(f"<td>{c.get(s, 0)}</td>" for s in STATUS_ORDER)
+        count_cells = f"<td>{c.get('FAIL', 0)}</td><td>{c.get('PASS', 0) + c.get('INFO', 0)}</td>"
         body_rows.append(
             f"<tr><td>{verdict}</td>"
             f'<td><a href="#{anchor}">{rep.label}</a></td>'

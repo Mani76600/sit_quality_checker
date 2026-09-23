@@ -121,27 +121,6 @@ def _clear_all_uploaded_data() -> None:
 
 def page_run_checks() -> None:
     st.title("SIT Output Quality Checker")
-    st.write(
-        "Upload your output folder as a single archive to validate it against the full "
-        "pipeline output checklist - same checks as the desktop version, just delivered "
-        "by upload instead of a local folder path."
-    )
-    st.caption(
-        "Extraction time (not checking time) is what mostly determines how long this "
-        "takes, and it scales with the number of files in your archive, not its total "
-        "size. In our own testing, a 93MB archive containing 75,055 individual files "
-        "took about 4-5 minutes just to extract, while checking that same content only "
-        "took about 54 seconds. So if an upload feels slow, it's almost certainly still "
-        "extracting - once that finishes, the checks themselves run quickly regardless "
-        "of folder size."
-    )
-    st.caption(
-        "Your upload is extracted to a private, temporary area on this server for the "
-        "duration of your session only, and isn't shared with other users. Click "
-        "**Clear uploaded data** when you're done, especially for sensitive content - "
-        "large or realistic-looking SIT test data shouldn't linger on a shared server "
-        "longer than it has to."
-    )
     _user_guide_download_button(key="dl_guide_main")
 
     with st.sidebar:
@@ -200,7 +179,7 @@ def page_run_checks() -> None:
     }
 
     labels = [c.label for c in contexts]
-    choice = st.selectbox("Select a run to view (or All to run every run found)",
+    choice = st.selectbox("Select a version to run (or All to run every version found)",
                            ["All"] + labels)
 
     selected = contexts if choice == "All" else [c for c in contexts if c.label == choice]
