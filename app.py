@@ -26,6 +26,7 @@ import pandas as pd
 import streamlit as st
 
 from qc.discovery import discover
+from qc.models import strip_root_prefix
 from qc.progress import make_reporter
 from qc.registry import run_all
 from qc.streamlit_report import render_report, render_run_all_summary_table
@@ -180,10 +181,12 @@ def page_run_checks() -> None:
                 state="complete" if contexts else "error",
             )
         st.session_state["contexts"] = contexts
+        st.session_state["extract_root"] = str(extract_root)
 
     contexts = st.session_state.get("contexts")
     if contexts is None:
         return
+    extract_root = st.session_state.get("extract_root")
 
     if not contexts:
         st.error("No Version_YYYYMMDD_HHMM directories found in the uploaded archive.")
@@ -207,7 +210,9 @@ def page_run_checks() -> None:
         with st.status(f"Running checks on {len(contexts)} run(s)...", expanded=True) as status:
             reporter = make_reporter(status.write)
             for ctx in selected:
-                reports.append(run_all(ctx, options, reporter))
+                rep = run_all(ctx, options, reporter)
+                strip_root_prefix(rep, extract_root)
+                reports.append(rep)
             status.update(label=f"All {len(contexts)} run(s) checked.", state="complete")
         render_run_all_summary_table(reports)
         st.divider()
@@ -218,6 +223,7 @@ def page_run_checks() -> None:
         with st.status("Running checks...", expanded=True) as status:
             reporter = make_reporter(status.write)
             rep = run_all(selected[0], options, reporter)
+            strip_root_prefix(rep, extract_root)
             status.update(label="Checks complete.", state="complete")
         render_report(rep)
 

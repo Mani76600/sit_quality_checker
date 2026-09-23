@@ -18,13 +18,30 @@ run for both Agreements and Disagreements.
   and for any minority/contaminating language value, the exact document's
   full raw_doc file path (via the record's own document_name + ground_truth
   fields, not just a bare count) so it can be opened directly
+
+IMPORTANT - streaming, not full materialization: real context_output_normalized
+files routinely run 100-250MB (each record embeds up to 6 nested text windows,
+each up to 8000 characters). Loading one of these via plain json.load() - and
+this file used to be parsed TWICE (once here, once again in export_summary.py's
+cross-check) - produces an in-memory object graph 3-5x the file's byte size,
+which was confirmed to OOM-crash the hosted web app on a real (non-huge)
+upload: the process log showed this exact check start and then go silent with
+no traceback, a signature of the container being killed rather than a normal
+Python exception. Fixed by streaming the file once via ijson (one record in
+memory at a time) and caching only small, bounded aggregate statistics -
+never the full record list - shared with export_summary.py's cross-check so
+the file is only read from disk once per run, not twice.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import ijson
+
+from qc.checks.inverted_index_scan import scan_inverted_index
 from qc.context import FolderSet, VersionContext
 from qc.jsonio import read_json, to_bool
 from qc.models import CheckResult, Status
@@ -52,6 +69,36 @@ CONTEXT_SUBFIELDS = [
 ]
 MAX_FIELD_ROWS_SHOWN = 12
 MAX_EXAMPLES = 8
+FIELD_EXAMPLES_PER_ROW = 3
+SIT_CATEGORY_EXAMPLES = 10
+CONFIDENCE_EXAMPLES = 10
+
+# Fields where "entirely absent from this file's schema" is a hard FAIL
+# rather than the informational schema-variant note every other field gets
+# (real samples have shown legitimate schema differences for other fields,
+# e.g. document_name/doc_id missing entirely on some pipeline versions -
+# but confidence is expected on every record regardless of schema version).
+REQUIRED_ALWAYS_PRESENT_FIELDS = {"confidence"}
+
+
+def _is_numeric_score(v: object) -> bool:
+    """True if v is (or numerically parses as) a score like 65/75/85 - real
+    samples store this as a numeric string (e.g. "85"), not a raw number, so
+    both are accepted; free text ("high", "N/A", ...) is not."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, (int, float)):
+        return True
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return False
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False
+    return False
 
 
 def _get_counts(export_summary: dict) -> tuple[int | None, int | None, int | None]:
@@ -65,6 +112,155 @@ def _get_counts(export_summary: dict) -> tuple[int | None, int | None, int | Non
 def _is_empty(v: object) -> bool:
     return v is None or v == "" or v == [] or v == {}
 
+
+def _record_language(rec: dict) -> str | None:
+    """The record's language, preferring the top-level field but falling
+    back to any context window's nested language field if the top-level one
+    is absent - schema variants have been seen with only one or the other."""
+    lang = rec.get("language")
+    if isinstance(lang, str) and lang.strip():
+        return lang
+    for wk in CONTEXT_WINDOW_KEYS:
+        window = rec.get(wk)
+        if isinstance(window, dict):
+            lang = window.get("language")
+            if isinstance(lang, str) and lang.strip():
+                return lang
+    return None
+
+
+# ------------------------------------------------------------- streaming scan
+
+@dataclass
+class FileScan:
+    """Small, bounded aggregate statistics for one context_output_normalized
+    file - never holds the full record list. Shared (cached) between this
+    module and export_summary.py so the file is only streamed once per run."""
+    error: str | None = None
+    not_a_list: bool = False
+    record_count: int = 0
+    ground_truth_true: int = 0
+    ground_truth_false: int = 0
+    observed_fields: set[str] = field(default_factory=set)
+    bad_sit_category_indices: list[int] = field(default_factory=list)
+    bad_confidence_count: int = 0
+    bad_confidence_examples: list[tuple[int, object]] = field(default_factory=list)
+    field_empty_counts: Counter = field(default_factory=Counter)
+    field_empty_examples: dict[str, list[str]] = field(default_factory=dict)
+    lang_counter: Counter = field(default_factory=Counter)
+    lang_examples: dict[str, list[dict]] = field(default_factory=dict)
+
+
+_SCAN_CACHE: dict[str, FileScan] = {}
+
+
+def clear_scan_cache() -> None:
+    _SCAN_CACHE.clear()
+
+
+def _peek_top_level_is_array(path: Path) -> bool | None:
+    """Cheap check of the top-level JSON type (first non-whitespace byte)
+    without parsing the file - lets us report a clear type-mismatch error
+    up front instead of ijson silently yielding zero items for a non-array
+    root, which would look identical to "empty array"."""
+    try:
+        with path.open("rb") as f:
+            while True:
+                b = f.read(1)
+                if not b:
+                    return None  # empty file
+                if b.isspace():
+                    continue
+                return b == b"["
+    except OSError:
+        return None
+
+
+def _note_empty_field(scan: FileScan, field_key: str, doc_ref: str) -> None:
+    scan.field_empty_counts[field_key] += 1
+    ex = scan.field_empty_examples.setdefault(field_key, [])
+    if len(ex) < FIELD_EXAMPLES_PER_ROW:
+        ex.append(doc_ref)
+
+
+def scan_file(path: Path) -> FileScan:
+    """Stream path (a top-level JSON array) exactly once, computing every
+    aggregate statistic every consumer needs, and cache the (small) result."""
+    key = str(path)
+    cached = _SCAN_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    scan = FileScan()
+    is_array = _peek_top_level_is_array(path)
+    if is_array is None:
+        scan.error = f"file not found or empty: {path}"
+        _SCAN_CACHE[key] = scan
+        return scan
+    if not is_array:
+        scan.not_a_list = True
+        _SCAN_CACHE[key] = scan
+        return scan
+
+    try:
+        with path.open("rb") as f:
+            for i, rec in enumerate(ijson.items(f, "item")):
+                if not isinstance(rec, dict):
+                    continue
+                scan.record_count += 1
+                scan.observed_fields |= set(rec.keys())
+
+                gt = str(rec.get("ground_truth", "")).strip().lower()
+                if gt == "true":
+                    scan.ground_truth_true += 1
+                elif gt == "false":
+                    scan.ground_truth_false += 1
+
+                cat = rec.get("sit_category")
+                if not cat or (isinstance(cat, str) and cat.strip().lower() == "undetermined"):
+                    if len(scan.bad_sit_category_indices) < SIT_CATEGORY_EXAMPLES:
+                        scan.bad_sit_category_indices.append(i)
+
+                doc_ref = str(rec.get("document_name") or rec.get("doc_id") or rec.get("value") or "?")
+
+                conf = rec.get("confidence")
+                if not _is_empty(conf) and not _is_numeric_score(conf):
+                    scan.bad_confidence_count += 1
+                    if len(scan.bad_confidence_examples) < CONFIDENCE_EXAMPLES:
+                        scan.bad_confidence_examples.append((i, conf))
+
+                for f_name in TOP_LEVEL_FIELDS:
+                    if _is_empty(rec.get(f_name)):
+                        _note_empty_field(scan, f_name, doc_ref)
+
+                for wk in CONTEXT_WINDOW_KEYS:
+                    window = rec.get(wk)
+                    if not isinstance(window, dict) or not window:
+                        _note_empty_field(scan, wk, doc_ref)
+                        continue
+                    for sf in CONTEXT_SUBFIELDS:
+                        if _is_empty(window.get(sf)):
+                            _note_empty_field(scan, f"{wk}.{sf}", doc_ref)
+
+                lang = _record_language(rec)
+                if lang:
+                    scan.lang_counter[lang] += 1
+                    examples = scan.lang_examples.setdefault(lang, [])
+                    if len(examples) < MAX_EXAMPLES:
+                        examples.append({
+                            "value": rec.get("value"),
+                            "ground_truth": rec.get("ground_truth"),
+                            "document_name": rec.get("document_name"),
+                            "doc_path": rec.get("doc_path"),
+                        })
+    except Exception as exc:  # ijson parse errors, truncated files, etc.
+        scan.error = f"invalid/truncated JSON in {path}: {exc}"
+
+    _SCAN_CACHE[key] = scan
+    return scan
+
+
+# ------------------------------------------------------------------- checks
 
 @register(category=CATEGORY)
 def check_context_normalized(ctx: VersionContext, options: dict) -> list[CheckResult]:
@@ -98,34 +294,35 @@ def _check_one(fs: FolderSet, threshold: float) -> list[CheckResult]:
         total_docs = total
 
     for jf in json_files:
-        data, err = read_json(jf)
-        if err:
+        scan = scan_file(jf)
+        if scan.error:
             results.append(CheckResult(
-                Status.FAIL, CATEGORY, "3", f"{jf.name} is readable JSON", err, scope,
+                Status.FAIL, CATEGORY, "3", f"{jf.name} is readable JSON", scan.error, scope,
                 "Regenerate the normalized-context export - the file is truncated or malformed."))
             continue
-        if not isinstance(data, list):
+        if scan.not_a_list:
             results.append(CheckResult(
                 Status.FAIL, CATEGORY, "3", f"{jf.name} is a JSON array",
-                f"Top-level type is {type(data).__name__}, expected a list of records.", scope))
+                "Top-level value is not a list of records.", scope))
             continue
 
         value_to_filenames = _build_value_to_filenames(fs)
 
-        # Every check below runs independently over the same records, even if
-        # an earlier one fails - so a single pass surfaces every issue in
-        # this file at once instead of one-at-a-time.
-        results.extend(_check_record_count(fs, jf, data, total_docs, threshold, scope))
-        results.extend(_check_sit_category(jf, data, scope))
-        results.extend(_check_field_completeness(jf, data, scope))
-        results.extend(_check_languages(fs, jf, data, value_to_filenames, scope))
+        # Every check below is independent, even if an earlier one fails -
+        # so a single pass surfaces every issue in this file at once instead
+        # of one-at-a-time.
+        results.extend(_check_record_count(jf, scan, total_docs, threshold, scope))
+        results.extend(_check_sit_category(jf, scan, scope))
+        results.extend(_check_field_completeness(jf, scan, scope))
+        results.extend(_check_confidence_is_numeric(jf, scan, scope))
+        results.extend(_check_languages(fs, jf, scan, value_to_filenames, scope))
 
     return results
 
 
-def _check_record_count(fs: FolderSet, jf, data: list, total_docs: int | None,
+def _check_record_count(jf, scan: FileScan, total_docs: int | None,
                          threshold: float, scope: str) -> list[CheckResult]:
-    record_count = len(data)
+    record_count = scan.record_count
     if total_docs is None:
         return [CheckResult(Status.INFO, CATEGORY, "3",
             f"{jf.name}: record count (no export_summary counts to compare)",
@@ -145,97 +342,98 @@ def _check_record_count(fs: FolderSet, jf, data: list, total_docs: int | None,
         "threshold in the sidebar if 1.0x is not the right expectation for this SIT.")]
 
 
-def _check_sit_category(jf, data: list, scope: str) -> list[CheckResult]:
-    bad_category = []
-    for i, rec in enumerate(data):
-        cat = rec.get("sit_category") if isinstance(rec, dict) else None
-        if not cat or (isinstance(cat, str) and cat.strip().lower() == "undetermined"):
-            if len(bad_category) < 10:
-                bad_category.append(i)
-
-    if bad_category:
+def _check_sit_category(jf, scan: FileScan, scope: str) -> list[CheckResult]:
+    if scan.bad_sit_category_indices:
         return [CheckResult(Status.FAIL, CATEGORY, "3",
             f"{jf.name}: sit_category populated on every record",
-            f"Records missing/undetermined sit_category, first indices: {bad_category}", scope,
+            f"Records missing/undetermined sit_category, first indices: "
+            f"{scan.bad_sit_category_indices}", scope,
             "Backfill sit_category (difficulty + polarity, e.g. 'easy positive') for "
             "every normalized-context record; it must never be empty or 'undetermined'.")]
     return [CheckResult(Status.PASS, CATEGORY, "3",
         f"{jf.name}: sit_category populated on every record",
-        f"All {len(data)} records have a non-empty, determined sit_category.", scope)]
+        f"All {scan.record_count} records have a non-empty, determined sit_category.", scope)]
 
 
-def _check_field_completeness(jf, data: list, scope: str) -> list[CheckResult]:
+def _check_field_completeness(jf, scan: FileScan, scope: str) -> list[CheckResult]:
     """Aggregated per-field emptiness audit across the whole file - one
     summary table, not one line per offending record.
 
     Schema-aware: some pipeline versions omit certain fields entirely (e.g.
     a real sample was found with no document_name/doc_id anywhere in the
     file at all - a genuine schema difference, not a per-record defect).
-    A field only gets checked for emptiness if it's actually part of this
-    file's observed schema; fields absent from every record are reported
-    once as an informational schema note instead of a false "100% empty"."""
-    observed_fields: set[str] = set()
-    for rec in data:
-        if isinstance(rec, dict):
-            observed_fields |= set(rec.keys())
-
-    applicable_fields = [f for f in TOP_LEVEL_FIELDS if f in observed_fields]
-    skipped_fields = [f for f in TOP_LEVEL_FIELDS if f not in observed_fields]
-    applicable_windows = [w for w in CONTEXT_WINDOW_KEYS if w in observed_fields]
+    A field only gets surfaced here if it's actually part of this file's
+    observed schema; fields absent from every record are reported once as
+    an informational schema note instead of a false "100% empty"."""
+    observed = scan.observed_fields
+    applicable_fields = [f for f in TOP_LEVEL_FIELDS if f in observed]
+    skipped_fields = [f for f in TOP_LEVEL_FIELDS if f not in observed]
+    applicable_windows = [w for w in CONTEXT_WINDOW_KEYS if w in observed]
 
     results: list[CheckResult] = []
-    if skipped_fields:
+
+    hard_missing = [f for f in skipped_fields if f in REQUIRED_ALWAYS_PRESENT_FIELDS]
+    soft_skipped = [f for f in skipped_fields if f not in REQUIRED_ALWAYS_PRESENT_FIELDS]
+
+    for f_name in hard_missing:
+        results.append(CheckResult(Status.FAIL, CATEGORY, "3 (addition)",
+            f"{jf.name}: {f_name} is present in the schema",
+            f"'{f_name}' does not appear on any record in this file at all.", scope,
+            f"'{f_name}' is required on every normalized-context record - regenerate this "
+            f"file with '{f_name}' populated."))
+
+    if soft_skipped:
         results.append(CheckResult(Status.INFO, CATEGORY, "3 (addition)",
             f"{jf.name}: fields not part of this file's schema",
-            f"{skipped_fields} do not appear in any record of this file - likely a "
+            f"{soft_skipped} do not appear in any record of this file - likely a "
             "different pipeline/schema version for this SIT; not treated as a failure.",
             scope))
 
-    empty_counts: Counter = Counter()
-    examples: dict[str, list[str]] = {}
+    def _applicable(key: str) -> bool:
+        return key.split(".")[0] in observed
 
-    def _note(field: str, doc_ref: str) -> None:
-        empty_counts[field] += 1
-        ex = examples.setdefault(field, [])
-        if len(ex) < 3:
-            ex.append(doc_ref)
+    applicable_empty = {k: n for k, n in scan.field_empty_counts.items() if _applicable(k)}
+    total = scan.record_count
 
-    total = len(data)
-    for rec in data:
-        if not isinstance(rec, dict):
-            continue
-        doc_ref = str(rec.get("document_name") or rec.get("doc_id") or rec.get("value") or "?")
-
-        for field in applicable_fields:
-            if _is_empty(rec.get(field)):
-                _note(field, doc_ref)
-
-        for wk in applicable_windows:
-            window = rec.get(wk)
-            if not isinstance(window, dict) or not window:
-                _note(wk, doc_ref)
-                continue
-            for sf in CONTEXT_SUBFIELDS:
-                if _is_empty(window.get(sf)):
-                    _note(f"{wk}.{sf}", doc_ref)
-
-    if not empty_counts:
+    if not applicable_empty:
         results.append(CheckResult(Status.PASS, CATEGORY, "3 (addition)",
             f"{jf.name}: every field is assigned (non-empty) on every record",
             f"Checked {total} record(s) across {len(applicable_fields)} top-level fields + "
             f"{len(applicable_windows)} context windows, none empty.", scope))
         return results
 
-    rows = [f"{field}: {n}/{total} empty (e.g. {examples[field]})"
-            for field, n in empty_counts.most_common(MAX_FIELD_ROWS_SHOWN)]
-    more = "" if len(empty_counts) <= MAX_FIELD_ROWS_SHOWN else \
-        f" (+{len(empty_counts) - MAX_FIELD_ROWS_SHOWN} more field(s) also affected)"
+    ranked = Counter(applicable_empty).most_common(MAX_FIELD_ROWS_SHOWN)
+    rows = [f"{field_key}: {n}/{total} empty (e.g. {scan.field_empty_examples.get(field_key, [])})"
+            for field_key, n in ranked]
+    more = "" if len(applicable_empty) <= MAX_FIELD_ROWS_SHOWN else \
+        f" (+{len(applicable_empty) - MAX_FIELD_ROWS_SHOWN} more field(s) also affected)"
     results.append(CheckResult(Status.FAIL, CATEGORY, "3 (addition)",
         f"{jf.name}: every field is assigned (non-empty) on every record",
         " | ".join(rows) + more, scope,
         "Backfill or regenerate the listed fields - every field that IS part of this "
         "file's schema should be populated on every record."))
     return results
+
+
+def _check_confidence_is_numeric(jf, scan: FileScan, scope: str) -> list[CheckResult]:
+    """confidence must hold a numeric score (e.g. 65, 75, 85 - stored as a
+    numeric string on real samples), never free text - checked only when
+    confidence is actually part of this file's schema (its total absence is
+    reported separately, as a hard FAIL, by _check_field_completeness)."""
+    if "confidence" not in scan.observed_fields:
+        return []
+    if scan.bad_confidence_count:
+        examples = [f"index {i}: {v!r}" for i, v in scan.bad_confidence_examples]
+        return [CheckResult(Status.FAIL, CATEGORY, "3 (addition)",
+            f"{jf.name}: confidence is a numeric score on every record",
+            f"{scan.bad_confidence_count} record(s) have a non-numeric confidence value, "
+            f"e.g. {examples}", scope,
+            "confidence must be a numeric score (e.g. 65, 75, 85), not free text - fix the "
+            "pipeline stage that writes this field.")]
+    return [CheckResult(Status.PASS, CATEGORY, "3 (addition)",
+        f"{jf.name}: confidence is a numeric score on every record",
+        f"All {scan.record_count} record(s) with a confidence value hold a numeric score.",
+        scope)]
 
 
 def _build_value_to_filenames(fs: FolderSet) -> dict[str, list[str]]:
@@ -246,18 +444,15 @@ def _build_value_to_filenames(fs: FolderSet) -> dict[str, list[str]]:
     document_name/doc_id aren't always present, and doc_path uses an
     internal generation path unrelated to the delivered filename - but
     'value' (the planted SIT value) is recorded consistently in both files,
-    confirmed against real Sweden sample data."""
-    data, err = read_json(fs.sit_inverted_index)
-    mapping: dict[str, list[str]] = {}
-    if err or not isinstance(data, dict):
-        return mapping
-    for _sit_name, value_map in data.items():
-        if not isinstance(value_map, dict):
-            continue
-        for value, filemap in value_map.items():
-            if isinstance(filemap, dict):
-                mapping[value] = list(filemap.keys())
-    return mapping
+    confirmed against real Sweden sample data.
+
+    Streamed via scan_inverted_index() rather than a plain json.load(): the
+    real file embeds every indexed chunk's full text and can run 50-100MB+,
+    none of which this lookup needs."""
+    scan = scan_inverted_index(fs.sit_inverted_index)
+    if scan.error or scan.not_a_dict:
+        return {}
+    return scan.value_to_filenames
 
 
 def _resolve_doc_full_path(fs: FolderSet, rec: dict, value_to_filenames: dict[str, list[str]]) -> str:
@@ -286,33 +481,9 @@ def _resolve_doc_full_path(fs: FolderSet, rec: dict, value_to_filenames: dict[st
     return "(no document identifier available on this record)"
 
 
-def _record_language(rec: dict) -> str | None:
-    """The record's language, preferring the top-level field but falling
-    back to any context window's nested language field if the top-level one
-    is absent - schema variants have been seen with only one or the other."""
-    lang = rec.get("language")
-    if isinstance(lang, str) and lang.strip():
-        return lang
-    for wk in CONTEXT_WINDOW_KEYS:
-        window = rec.get(wk)
-        if isinstance(window, dict):
-            lang = window.get("language")
-            if isinstance(lang, str) and lang.strip():
-                return lang
-    return None
-
-
-def _check_languages(fs: FolderSet, jf, data: list, value_to_filenames: dict[str, list[str]],
+def _check_languages(fs: FolderSet, jf, scan: FileScan, value_to_filenames: dict[str, list[str]],
                       scope: str) -> list[CheckResult]:
-    lang_counter: Counter[str] = Counter()
-    contaminated_paths: dict[str, list[str]] = {}
-
-    for rec in data:
-        if not isinstance(rec, dict):
-            continue
-        lang = _record_language(rec)
-        if lang:
-            lang_counter[lang] += 1
+    lang_counter = scan.lang_counter
 
     if not lang_counter:
         # Never go silent - confirm the check ran even when this file's
@@ -341,20 +512,12 @@ def _check_languages(fs: FolderSet, jf, data: list, value_to_filenames: dict[str
             f"All {total_lang} records are language '{majority_lang}'.", scope))
         return results
 
-    for rec in data:
-        if not isinstance(rec, dict):
-            continue
-        lang = _record_language(rec)
-        if lang and lang != majority_lang:
-            full_path = _resolve_doc_full_path(fs, rec, value_to_filenames)
-            paths = contaminated_paths.setdefault(lang, [])
-            if len(paths) < MAX_EXAMPLES:
-                paths.append(full_path)
-
     total_minority = sum(minorities.values())
-    example_paths = [f"'{lang}': {path}"
-                      for lang, _n in sorted(minorities.items(), key=lambda kv: -kv[1])
-                      for path in contaminated_paths.get(lang, [])]
+    example_paths = [
+        f"'{lang}': {_resolve_doc_full_path(fs, mini_rec, value_to_filenames)}"
+        for lang, _n in sorted(minorities.items(), key=lambda kv: -kv[1])
+        for mini_rec in scan.lang_examples.get(lang, [])
+    ]
     results.append(CheckResult(Status.WARN, CATEGORY, "3 (addition)",
         f"{jf.name}: language consistency - contamination found",
         f"Majority language '{majority_lang}' ({majority_n}/{total_lang} records); "

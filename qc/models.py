@@ -80,3 +80,36 @@ class RunReport:
             "counts": self.counts(),
             "results": [r.to_dict() for r in self.results],
         }
+
+
+def strip_root_prefix(report: RunReport, root: str) -> None:
+    """Rewrite every path-bearing string on ``report`` in place, removing a
+    leading ``root`` (and its separator variants). Used by the web app to
+    keep its private extraction temp-dir path (e.g.
+    ``/tmp/qcweb_xxx/extracted/``) out of anything a user sees or
+    downloads - only the meaningful part of the path (SIT/.../Version_.../
+    file) should ever be shown."""
+    if not root:
+        return
+    root = str(root)
+    bases = {root, root.replace("\\", "/"), root.replace("/", "\\")}
+    prefixes = sorted(
+        {b.rstrip("/\\") + sep for b in bases for sep in ("/", "\\")},
+        key=len, reverse=True,
+    )
+
+    def _strip(s: str) -> str:
+        if not isinstance(s, str) or not s:
+            return s
+        for p in prefixes:
+            s = s.replace(p, "")
+        return s
+
+    report.version_dir = _strip(report.version_dir)
+    for r in report.results:
+        r.item_ref = _strip(r.item_ref)
+        r.title = _strip(r.title)
+        r.detail = _strip(r.detail)
+        r.scope = _strip(r.scope)
+        r.fix = _strip(r.fix)
+        r.evidence = [_strip(e) for e in r.evidence]

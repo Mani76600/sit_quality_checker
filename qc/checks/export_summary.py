@@ -15,6 +15,7 @@ from qc.context import FolderSet, VersionContext
 from qc.jsonio import read_json, read_jsonl_cached
 from qc.models import CheckResult, Status
 from qc.registry import register
+from qc.checks.context_normalized import scan_file as _scan_context_normalized_file
 
 CATEGORY_5 = "5. export_summary.json ground truth"
 CATEGORY_67 = "6-7. corpus.jsonl / combined_metadata.jsonl counts"
@@ -137,16 +138,18 @@ def _check_ground_truth_one(fs: FolderSet) -> list[CheckResult]:
                 "disagree with each other - regenerate the summary."))
 
     # Cross-check against the *actual* context_output_normalized file content,
-    # not just export_summary's self-reported numbers.
+    # not just export_summary's self-reported numbers. Uses the SAME cached
+    # streaming scan as context_normalized.py's own check - this file can be
+    # 100-250MB+ in real samples, so it must never be fully materialized
+    # (via json.load) twice; scan_file() streams it once and both checks
+    # share the cached, small aggregate result.
     for jf in fs.context_output_normalized_files():
-        actual, jerr = read_json(jf)
-        if jerr or not isinstance(actual, list):
+        scan = _scan_context_normalized_file(jf)
+        if scan.error or scan.not_a_list:
             continue
-        actual_count = len(actual)
-        actual_true = sum(1 for r in actual if isinstance(r, dict)
-                          and str(r.get("ground_truth")).strip().lower() == "true")
-        actual_false = sum(1 for r in actual if isinstance(r, dict)
-                           and str(r.get("ground_truth")).strip().lower() == "false")
+        actual_count = scan.record_count
+        actual_true = scan.ground_truth_true
+        actual_false = scan.ground_truth_false
         if nc_records is not None:
             if actual_count == nc_records:
                 results.append(CheckResult(Status.PASS, CATEGORY_5, "5",

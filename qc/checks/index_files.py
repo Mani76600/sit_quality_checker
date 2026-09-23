@@ -17,31 +17,25 @@ each result explicitly naming which file it's about (never conflated):
 sit_merged_index.json is only produced by some pipeline versions - if
 absent, that's reported as an explicit INFO (optional), never silently
 skipped or conflated with sit_inverted_index.json's own results.
+
+IMPORTANT - streaming, not full materialization: this file embeds every
+indexed chunk's full text and real samples run 50-100MB+. All three checks
+below only need small aggregate facts (a "polarity" key count, a value
+count, chunk_id/chunk_content completeness counts) - none need the chunk
+text itself - so they all read scan_inverted_index()'s one streamed pass
+over the file (shared with context_normalized.py's own lookup, so the file
+is parsed at most once per run) instead of a plain json.load().
 """
 
 from __future__ import annotations
 
+from qc.checks.inverted_index_scan import InvertedIndexScan, scan_inverted_index
 from qc.context import FolderSet, VersionContext
 from qc.jsonio import read_json
 from qc.models import CheckResult, Status
 from qc.registry import register
 
 CATEGORY = "4. Index Files (sit_inverted_index.json / sit_merged_index.json)"
-
-
-def _find_polarity_keys(obj, path: str = "$", found: list | None = None) -> list[str]:
-    if found is None:
-        found = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            new_path = f"{path}.{k}"
-            if k == "polarity":
-                found.append(new_path)
-            _find_polarity_keys(v, new_path, found)
-    elif isinstance(obj, list):
-        for i, item in enumerate(obj[:50]):  # cap for very large indexes
-            _find_polarity_keys(item, f"{path}[{i}]", found)
-    return found
 
 
 def _get_total_docs(export_summary: dict) -> int | None:
@@ -85,50 +79,45 @@ def _check_folder_set(fs: FolderSet) -> list[CheckResult]:
         if not path.exists():
             continue
 
-        data, err = read_json(path)
-        if err:
+        scan = scan_inverted_index(path)
+        if scan.error:
             results.append(CheckResult(Status.FAIL, CATEGORY, "4",
-                f"{name}: readable JSON", err, scope,
+                f"{name}: readable JSON", scan.error, scope,
                 f"Regenerate {name} - it is missing or malformed."))
             continue
-        if not isinstance(data, dict):
+        if scan.not_a_dict:
             results.append(CheckResult(Status.FAIL, CATEGORY, "4",
                 f"{name}: top-level structure is a SIT-name-keyed object",
-                f"Top-level type is {type(data).__name__}, expected a dict keyed by SIT name.",
-                scope))
+                "Top-level value is not a dict keyed by SIT name.", scope))
             continue
 
-        results.extend(_check_polarity_naming(name, data, scope))
-        results.extend(_check_value_count_vs_docs(name, data, total_docs, scope))
-        results.extend(_check_field_completeness(name, data, scope))
+        results.extend(_check_polarity_naming(name, scan, scope))
+        results.extend(_check_value_count_vs_docs(name, scan, total_docs, scope))
+        results.extend(_check_field_completeness(name, scan, scope))
 
     return results
 
 
-def _check_polarity_naming(name: str, data: dict, scope: str) -> list[CheckResult]:
-    hits = _find_polarity_keys(data)
-    if hits:
+def _check_polarity_naming(name: str, scan: InvertedIndexScan, scope: str) -> list[CheckResult]:
+    if scan.polarity_key_count:
         return [CheckResult(Status.FAIL, CATEGORY, "4",
             f"{name}: chunk records use 'chunk_label' not 'polarity'",
-            f"Found 'polarity' key at {len(hits)} location(s), e.g. {hits[:5]}", scope,
+            f"Found 'polarity' key at {scan.polarity_key_count} location(s), "
+            f"e.g. {scan.polarity_key_paths[:5]}", scope,
             f"Rename 'polarity' to 'chunk_label' in every chunk-level record of {name}.")]
     return [CheckResult(Status.PASS, CATEGORY, "4",
         f"{name}: chunk records use 'chunk_label' not 'polarity'",
         f"No 'polarity' key found anywhere in {name}.", scope)]
 
 
-def _check_value_count_vs_docs(name: str, data: dict, total_docs: int | None,
+def _check_value_count_vs_docs(name: str, scan: InvertedIndexScan, total_docs: int | None,
                                 scope: str) -> list[CheckResult]:
     if total_docs is None:
         return [CheckResult(Status.WARN, CATEGORY, "4",
             f"{name}: unique SIT-value count matches document count",
             "Could not read export_summary.json's counts.total to compare against.", scope)]
 
-    unique_values = 0
-    for sit_name, value_map in data.items():
-        if isinstance(value_map, dict):
-            unique_values += len(value_map)
-
+    unique_values = scan.unique_values
     if unique_values == total_docs:
         return [CheckResult(Status.PASS, CATEGORY, "4",
             f"{name}: unique SIT-value count matches document count",
@@ -141,34 +130,11 @@ def _check_value_count_vs_docs(name: str, data: dict, total_docs: int | None,
         "investigate missing or duplicated entries.")]
 
 
-def _check_field_completeness(name: str, data: dict, scope: str) -> list[CheckResult]:
-    total_entries = 0
-    empty_chunk_id = 0
-    empty_chunk_content = 0
-    examples: list[str] = []
-
-    for sit_name, value_map in data.items():
-        if not isinstance(value_map, dict):
-            continue
-        for value, filemap in value_map.items():
-            if not isinstance(filemap, dict):
-                continue
-            for filename, chunklist in filemap.items():
-                if not isinstance(chunklist, list):
-                    continue
-                for chunk in chunklist:
-                    if not isinstance(chunk, dict):
-                        continue
-                    total_entries += 1
-                    bad = False
-                    if chunk.get("chunk_id") in (None, ""):
-                        empty_chunk_id += 1
-                        bad = True
-                    if not chunk.get("chunk_content"):
-                        empty_chunk_content += 1
-                        bad = True
-                    if bad and len(examples) < 10:
-                        examples.append(f"value='{value}' file='{filename}'")
+def _check_field_completeness(name: str, scan: InvertedIndexScan, scope: str) -> list[CheckResult]:
+    total_entries = scan.total_chunk_entries
+    empty_chunk_id = scan.empty_chunk_id
+    empty_chunk_content = scan.empty_chunk_content
+    examples = scan.field_completeness_examples
 
     if total_entries == 0:
         return [CheckResult(Status.WARN, CATEGORY, "4",

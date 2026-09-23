@@ -49,6 +49,13 @@ def run_all(ctx: VersionContext, options: dict | None = None,
     file_cache.clear()  # never reuse a listing across separate runs/reruns
     jsonio.clear_jsonl_cache()
     jsonio.clear_json_cache()
+    # Deferred imports: these check modules import qc.registry, so they can
+    # only be imported after _load_check_modules() has already loaded them
+    # (avoids a circular import at module load time).
+    from qc.checks.context_normalized import clear_scan_cache
+    clear_scan_cache()
+    from qc.checks.inverted_index_scan import clear_scan_cache as clear_inverted_index_cache
+    clear_inverted_index_cache()
     report = RunReport(label=ctx.label, version_dir=str(ctx.version_dir))
     report_progress(f"Starting checks for: {ctx.label} ({len(_CHECKS)} check functions registered)")
     for i, (category, fn) in enumerate(_CHECKS, start=1):

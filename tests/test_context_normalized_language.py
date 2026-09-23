@@ -1,14 +1,17 @@
-from pathlib import Path
+import json
 
-from qc.checks.context_normalized import _check_languages, _record_language
+from qc.checks.context_normalized import _check_languages, _record_language, scan_file
 from qc.context import VersionContext
 from qc.models import Status
-
-_JF = Path("sit.json")
 
 
 def _ctx(tmp_path) -> VersionContext:
     return VersionContext(version_dir=tmp_path, sit_name="Test SIT", language=None, layout="english")
+
+
+def _write_records(path, records) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(records), encoding="utf-8")
 
 
 def test_record_language_falls_back_to_nested_context_window():
@@ -29,8 +32,10 @@ def test_check_languages_never_silently_returns_nothing(tmp_path):
     # results - indistinguishable from the check never having run. It must
     # always report something.
     ctx = _ctx(tmp_path)
-    data = [{"value": "123"}, {"value": "456"}]  # no language field at all
-    results = _check_languages(ctx.agreements, _JF, data, {}, "Agreements")
+    jf = tmp_path / "sit.json"
+    _write_records(jf, [{"value": "123"}, {"value": "456"}])  # no language field at all
+    scan = scan_file(jf)
+    results = _check_languages(ctx.agreements, jf, scan, {}, "Agreements")
     assert len(results) >= 1
     assert results[0].status == Status.INFO
     assert "no" in results[0].detail.lower() or "language" in results[0].title.lower()
@@ -38,15 +43,17 @@ def test_check_languages_never_silently_returns_nothing(tmp_path):
 
 def test_check_languages_detects_contamination_with_nested_only_field(tmp_path):
     ctx = _ctx(tmp_path)
-    data = [
+    jf = tmp_path / "sit.json"
+    _write_records(jf, [
         {"value": "1", "document_name": "a.docx", "ground_truth": "true",
          "context_100": {"language": "sv"}},
         {"value": "2", "document_name": "b.docx", "ground_truth": "true",
          "context_100": {"language": "sv"}},
         {"value": "3", "document_name": "c.docx", "ground_truth": "true",
          "context_100": {"language": "no"}},  # contamination, nested-only
-    ]
-    results = _check_languages(ctx.agreements, _JF, data, {}, "Agreements")
+    ])
+    scan = scan_file(jf)
+    results = _check_languages(ctx.agreements, jf, scan, {}, "Agreements")
     warn_results = [r for r in results if r.status == Status.WARN]
     assert warn_results, "expected a contamination WARN"
     assert "no" in warn_results[0].detail
