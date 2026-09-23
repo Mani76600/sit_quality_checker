@@ -17,6 +17,20 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import render_html, render_pdf
 
+def _inject_metric_css() -> None:
+    """Streamlit's default st.metric value font (~2.25rem, no wrapping) cuts
+    off longer values like "4901 pos / 9746 neg" with an ellipsis - shrink
+    it and allow wrapping so every metric stays fully readable."""
+    st.markdown(
+        "<style>"
+        '[data-testid="stMetricValue"] { font-size: 1.3rem; white-space: normal; '
+        "overflow-wrap: break-word; line-height: 1.3; }"
+        '[data-testid="stMetricLabel"] { font-size: 0.85rem; }'
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
+
 STATUS_ICON = {
     Status.PASS.value: "✅",
     Status.FAIL.value: "❌",
@@ -80,6 +94,7 @@ def _anchor(html_id: str) -> None:
 
 
 def render_report(report: RunReport) -> None:
+    _inject_metric_css()
     counts = report.counts()
     report_anchor = _slugify("run", report.version_dir)
     _anchor(report_anchor)
