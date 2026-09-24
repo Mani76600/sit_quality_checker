@@ -81,14 +81,22 @@ def add_bullet(doc: Document, text: str) -> None:
     run.font.size = Pt(11)
 
 
-def add_numbered_step(doc: Document, title: str, detail: str) -> None:
-    p = doc.add_paragraph(style="List Number")
-    run = p.add_run(title)
+def add_numbered_step(doc: Document, n: int, title: str, detail: str) -> None:
+    """Manually-numbered step (n. Title) rather than Word's built-in "List
+    Number" style - that style shares ONE running count for the whole
+    document, so a second numbered list later in the doc (e.g. Section 6's
+    steps) would confusingly continue from where an earlier one left off
+    instead of restarting at 1. An explicit n keeps every section's steps
+    starting at 1, unambiguously."""
+    p = doc.add_paragraph()
+    p.paragraph_format.left_indent = Inches(0.25)
+    p.paragraph_format.space_before = Pt(6)
+    run = p.add_run(f"{n}. {title}")
     run.font.bold = True
     run.font.size = Pt(11.5)
     if detail:
         p2 = doc.add_paragraph()
-        p2.paragraph_format.left_indent = Inches(0.35)
+        p2.paragraph_format.left_indent = Inches(0.5)
         run2 = p2.add_run(detail)
         run2.font.size = Pt(10.5)
         run2.font.color.rgb = BRAND_GREY
@@ -162,26 +170,26 @@ def build() -> Document:
 
     add_body(doc, "")
     add_body(doc, "How to compress your output folder:", bold=True)
-    add_numbered_step(doc, "Find your output folder",
+    add_numbered_step(doc, 1, "Find your output folder",
         "This is the folder named after your SIT (e.g. \"Taiwan Passport Number\") "
         "that contains the Version_YYYYMMDD_HHMM folder(s).")
-    add_numbered_step(doc, "Right-click the folder",
+    add_numbered_step(doc, 2, "Right-click the folder",
         "On Windows: choose \"Compress to ZIP file\" (or use 7-Zip / WinRAR if you have "
         "them installed and prefer .7z).")
-    add_numbered_step(doc, "Wait for it to finish",
+    add_numbered_step(doc, 3, "Wait for it to finish",
         "Large folders with many documents can take several minutes to compress - "
         "this is normal.")
 
     # ------------------------------------------------------- 3. STEP-BY-STEP
     add_heading(doc, "3. Step-by-step: Running a quality check", level=1)
 
-    add_numbered_step(doc, "Open the tool",
+    add_numbered_step(doc, 1, "Open the tool",
         "Go to the web address provided by your team. You'll see two tabs: "
         "\"Run Checks\" and \"Reference Completeness\". Stay on \"Run Checks\".")
-    add_numbered_step(doc, "Upload your archive",
+    add_numbered_step(doc, 2, "Upload your archive",
         "In the left-hand sidebar, click \"Browse files\" under \"Output folder "
-        "archive\" and select the .zip/.7z file you prepared in Step 2 above.")
-    add_numbered_step(doc, "(Optional) Adjust settings",
+        "archive\" and select the .zip/.7z file you prepared above.")
+    add_numbered_step(doc, 3, "(Optional) Adjust settings",
         "Most users can leave these as-is:\n"
         "  - Ratio threshold: how many context records are expected per document "
         "(default is fine for most SITs).\n"
@@ -190,15 +198,15 @@ def build() -> Document:
         "mind waiting longer.\n"
         "  - Sample size: how many documents to check per test when not running "
         "exhaustively (200 is a good default).")
-    add_numbered_step(doc, "Click \"Run Checks\"",
+    add_numbered_step(doc, 4, "Click \"Run Checks\"",
         "The tool will first extract your archive (this can take a few minutes for "
         "large folders), then discover your output run(s), then run every check. "
         "You'll see live progress messages the whole time - it hasn't frozen, it's "
         "working through your files.")
-    add_numbered_step(doc, "If more than one version is found",
+    add_numbered_step(doc, 5, "If more than one version is found",
         "A dropdown labeled \"Select a version to run\" lets you either view all of "
         "them together (\"All\") or pick one specific version to inspect.")
-    add_numbered_step(doc, "Review your results",
+    add_numbered_step(doc, 6, "Review your results",
         "See Section 4 below for how to read what you get back.")
 
     add_note(doc, "How long does this take?",
@@ -219,11 +227,13 @@ def build() -> Document:
         "a \"Checklist at a glance\" table summarizing every category, then full "
         "details further down.")
     add_note(doc, "Why only PASS and FAIL at the top?",
-             "Background information notes (see INFO below) are automatically "
-             "counted as passed at this top level since they don't need any action "
-             "from you - only a real problem should command your attention here. "
-             "Warnings still appear further down, with their own amber icon, inside "
-             "whichever category they belong to.", BRAND_BLUE)
+             "A handful of checks are purely informational (e.g. noting which SIT "
+             "name was detected) rather than pass/fail judgments - those are folded "
+             "into PASS everywhere in this report, including in each category's own "
+             "count, since they never need any action from you. Warnings are real "
+             "and still appear further down with their own amber icon, inside "
+             "whichever category they belong to - they're just not tallied in this "
+             "top summary.", BRAND_BLUE)
 
     table = doc.add_table(rows=1, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -235,11 +245,9 @@ def build() -> Document:
         ("PASS", "This check succeeded - nothing to do.", BRAND_GREEN),
         ("FAIL", "A real problem was found. Each FAIL includes a \"Suggested fix\" "
                  "explaining what to do about it.", BRAND_RED),
-        ("WARN", "Not necessarily wrong, but worth a look before you rely on "
-                 "this output.", BRAND_AMBER),
-        ("INFO", "Background information - not a problem, just useful context "
-                 "(for example, which SIT name was detected). Counted as a pass "
-                 "everywhere in this report.", BRAND_BLUE),
+        ("WARN", "Not necessarily wrong, but worth a look before you rely on this "
+                 "output - shown less often than PASS/FAIL, only when a check finds "
+                 "something worth a second opinion.", BRAND_AMBER),
     ]
     for label, meaning, color in rows_data:
         row = table.add_row().cells
@@ -284,13 +292,13 @@ def build() -> Document:
         "This second tab is a separate, optional feature - it checks your reference "
         "material (not any specific output run) and looks up whether a particular "
         "SIT and language are covered.")
-    add_numbered_step(doc, "Upload your sit_packs archive",
+    add_numbered_step(doc, 1, "Upload your sit_packs archive",
         "Required for this tab. Compress your sit_packs folder the same way as "
         "Section 2 above.")
-    add_numbered_step(doc, "(Optional) Upload SIT Specs and/or the 213 MCE keywords file",
+    add_numbered_step(doc, 2, "(Optional) Upload SIT Specs and/or the 213 MCE keywords file",
         "These improve the accuracy of the SIT + language lookup below, but aren't "
         "required.")
-    add_numbered_step(doc, "Look up a specific SIT + language",
+    add_numbered_step(doc, 3, "Look up a specific SIT + language",
         "Type a SIT name and a language, then click \"Check this SIT + language\". "
         "If it can't be confirmed, you'll be given a link to the master specs "
         "reference to check manually.")
