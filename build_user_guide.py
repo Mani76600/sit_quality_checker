@@ -195,9 +195,9 @@ def build() -> Document:
         "large folders), then discover your output run(s), then run every check. "
         "You'll see live progress messages the whole time - it hasn't frozen, it's "
         "working through your files.")
-    add_numbered_step(doc, "If more than one run is found",
-        "A dropdown will let you either view all of them together or pick one "
-        "specific run to inspect.")
+    add_numbered_step(doc, "If more than one version is found",
+        "A dropdown labeled \"Select a version to run\" lets you either view all of "
+        "them together (\"All\") or pick one specific version to inspect.")
     add_numbered_step(doc, "Review your results",
         "See Section 4 below for how to read what you get back.")
 
@@ -210,9 +210,20 @@ def build() -> Document:
     # ------------------------------------------------------ 4. UNDERSTANDING
     add_heading(doc, "4. Understanding your results", level=1)
     add_body(doc,
-        "At the top of your report you'll see one of three verdicts, followed by a "
-        "\"Checklist at a glance\" table summarizing every category, then full "
+        "Right under the report title you'll see a quick document-count summary - "
+        "the total number of documents, and how many are positive/negative in "
+        "Agreements and in Disagreements - so you can sanity-check the scale of "
+        "what was checked at a glance.")
+    add_body(doc,
+        "Below that is one of three verdicts, two large numbers (PASS and FAIL), "
+        "a \"Checklist at a glance\" table summarizing every category, then full "
         "details further down.")
+    add_note(doc, "Why only PASS and FAIL at the top?",
+             "Background information notes (see INFO below) are automatically "
+             "counted as passed at this top level since they don't need any action "
+             "from you - only a real problem should command your attention here. "
+             "Warnings still appear further down, with their own amber icon, inside "
+             "whichever category they belong to.", BRAND_BLUE)
 
     table = doc.add_table(rows=1, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -227,7 +238,8 @@ def build() -> Document:
         ("WARN", "Not necessarily wrong, but worth a look before you rely on "
                  "this output.", BRAND_AMBER),
         ("INFO", "Background information - not a problem, just useful context "
-                 "(for example, which SIT name was detected).", BRAND_BLUE),
+                 "(for example, which SIT name was detected). Counted as a pass "
+                 "everywhere in this report.", BRAND_BLUE),
     ]
     for label, meaning, color in rows_data:
         row = table.add_row().cells
@@ -238,13 +250,21 @@ def build() -> Document:
 
     doc.add_paragraph()
     add_body(doc,
-        "Click on any category (like \"3. context_output_normalized\" or \"8. "
-        "Metadata / Engine Match / Chunk Labels\") to expand it and see every "
-        "individual result. Categories with a FAIL or WARN open automatically so "
-        "you don't have to hunt for them.")
+        "Every row of the \"Checklist at a glance\" table is clickable - click one "
+        "(like \"context_output_normalized\" or \"Metadata / Engine Match / Chunk "
+        "Labels\") and the page jumps straight to that category's full detail "
+        "further down, instead of you having to scroll and hunt for it. If any "
+        "checks failed, a \"Jump to failed check(s)\" line right under the verdict "
+        "banner gives you the same kind of direct links to just the problem "
+        "categories.")
     add_body(doc,
-        "For any FAIL or WARN, read the detail text and the \"Suggested fix\" line - "
-        "together they tell you exactly what's wrong and what to do about it.")
+        "Categories with a FAIL or WARN open automatically so you don't have to "
+        "click them open yourself. For any FAIL or WARN, read the detail text and "
+        "the \"Suggested fix\" line - together they tell you exactly what's wrong "
+        "and what to do about it. When a check found many occurrences of the same "
+        "problem, only one representative example is shown alongside the total "
+        "count - it's there to show you what the problem looks like, not to list "
+        "every single occurrence.")
 
     # ------------------------------------------------------- 5. DOWNLOADING
     add_heading(doc, "5. Downloading your report", level=1)
