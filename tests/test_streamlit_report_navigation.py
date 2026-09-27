@@ -181,7 +181,8 @@ def test_doc_counts_highlight_renders_when_present(monkeypatch):
     at.run()
     assert not at.exception
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics.get("Total documents") == "150"
+    assert metrics.get("Total documents (all)") == "155"
+    assert metrics.get("Total documents (Agreements)") == "150"
     assert metrics.get("Agreements") == "100 pos / 50 neg"
     assert metrics.get("Disagreements") == "3 pos / 2 neg"
 
@@ -191,7 +192,8 @@ def test_doc_counts_highlight_absent_when_not_populated():
     at.run()
     assert not at.exception
     metrics = {m.label for m in at.metric}
-    assert "Total documents" not in metrics
+    assert "Total documents (all)" not in metrics
+    assert "Total documents (Agreements)" not in metrics
 
 
 def test_clean_run_has_no_jump_links(monkeypatch):

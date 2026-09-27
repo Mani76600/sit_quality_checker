@@ -104,10 +104,17 @@ def render_report(report: RunReport) -> None:
     dc = report.doc_counts or {}
     if dc:
         ag, da = dc.get("agreements", {}), dc.get("disagreements", {})
-        hi_cols = st.columns(3)
-        hi_cols[0].metric("Total documents", dc.get("total") if dc.get("total") is not None else "—")
-        hi_cols[1].metric("Agreements", f"{ag.get('positive', '—')} pos / {ag.get('negative', '—')} neg")
-        hi_cols[2].metric("Disagreements", f"{da.get('positive', '—')} pos / {da.get('negative', '—')} neg")
+        hi_cols = st.columns(4)
+        hi_cols[0].metric(
+            "Total documents (all)",
+            dc.get("combined_total") if dc.get("combined_total") is not None else "—",
+        )
+        hi_cols[1].metric(
+            "Total documents (Agreements)",
+            dc.get("total") if dc.get("total") is not None else "—",
+        )
+        hi_cols[2].metric("Agreements", f"{ag.get('positive', '—')} pos / {ag.get('negative', '—')} neg")
+        hi_cols[3].metric("Disagreements", f"{da.get('positive', '—')} pos / {da.get('negative', '—')} neg")
 
     grouped = report.by_category()
     ordered_categories = sorted(grouped, key=category_sort_key)

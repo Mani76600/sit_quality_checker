@@ -34,7 +34,8 @@ if os.environ.get("FIXTURE_DOC_COUNTS"):
     rep = _make_report("Test SIT / Version_20260101_1200",
                         "/tmp/x/Test SIT/Version_20260101_1200",
                         with_fail=False, with_warn=False, with_info=True,
-                        doc_counts={"total": 150, "agreements": {"positive": 100, "negative": 50},
+                        doc_counts={"total": 150, "combined_total": 155,
+                                    "agreements": {"positive": 100, "negative": 50},
                                     "disagreements": {"positive": 3, "negative": 2}})
     render_report(rep)
 elif os.environ.get("FIXTURE_MULTI_RUN"):

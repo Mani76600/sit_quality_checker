@@ -53,6 +53,13 @@ def _folder_set_counts(fs) -> dict:
     }
 
 
+def _resolved_total(counts: dict) -> int | None:
+    total = counts["total"]
+    if total is None and counts["positive"] is not None and counts["negative"] is not None:
+        total = counts["positive"] + counts["negative"]
+    return total
+
+
 def _read_doc_counts(ctx: VersionContext) -> dict:
     """Small summary (total / Agreements pos-neg / Disagreements pos-neg)
     read once per run from each folder set's export_summary.json, shown as
@@ -61,10 +68,22 @@ def _read_doc_counts(ctx: VersionContext) -> dict:
     read this file."""
     agreements = _folder_set_counts(ctx.agreements)
     disagreements = _folder_set_counts(ctx.disagreements)
-    total = agreements["total"]
-    if total is None and agreements["positive"] is not None and agreements["negative"] is not None:
-        total = agreements["positive"] + agreements["negative"]
-    return {"total": total, "agreements": agreements, "disagreements": disagreements}
+    agreements_total = _resolved_total(agreements)
+    disagreements_total = _resolved_total(disagreements)
+    # "total" stays Agreements-only (unchanged - existing dashboards/consumers
+    # rely on this meaning "the reconciled corpus size"). "combined_total" is
+    # additive: Agreements + Disagreements, or None if either side is unknown.
+    combined_total = (
+        agreements_total + disagreements_total
+        if agreements_total is not None and disagreements_total is not None
+        else None
+    )
+    return {
+        "total": agreements_total,
+        "combined_total": combined_total,
+        "agreements": agreements,
+        "disagreements": disagreements,
+    }
 
 
 def run_all(ctx: VersionContext, options: dict | None = None,
