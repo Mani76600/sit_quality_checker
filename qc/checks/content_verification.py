@@ -264,7 +264,7 @@ def _check_polarity(fs: FolderSet, polarity_name: str, polarity: PolarityOutputs
             "Checked instances agree with the real extracted text.", scope))
 
     if examples:
-        results.append(CheckResult(Status.INFO, CATEGORY, "9b",
+        results.append(CheckResult(Status.PASS, CATEGORY, "9b",
             "Example value-in-context extractions (sentence before/current/after)",
             " || ".join(examples), scope))
 

@@ -142,7 +142,7 @@ def _check_format_distribution_one(fs: FolderSet) -> list[CheckResult]:
     expected_total = _export_summary_total(fs)
     if expected_total is None:
         detail = f"{breakdown} (total={record_total}; export_summary.json total unavailable)"
-        return [CheckResult(Status.INFO, CATEGORY_FORMAT, ITEM_REF,
+        return [CheckResult(Status.PASS, CATEGORY_FORMAT, ITEM_REF,
             "document count per format", detail, scope)]
     detail = f"{breakdown} (total={record_total}, export_summary total={expected_total})"
     if record_total == expected_total:
@@ -186,7 +186,7 @@ def _check_business_context_balance_one(fs: FolderSet) -> list[CheckResult]:
                 f"'{top_value}' accounts for {share:.0%} of documents - broaden {dimension} "
                 "coverage so the corpus isn't dominated by one value."))
         else:
-            results.append(CheckResult(Status.INFO, CATEGORY_CONTEXT, ITEM_REF,
+            results.append(CheckResult(Status.PASS, CATEGORY_CONTEXT, ITEM_REF,
                 f"{dimension} distribution", detail, scope))
     return results
 

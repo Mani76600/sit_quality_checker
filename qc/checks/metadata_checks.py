@@ -318,7 +318,7 @@ def _check_chunk_label_consistency(fs: FolderSet, polarity_name: str, polarity: 
             scope))
 
     if multi_sit_found_examples:
-        results.append(CheckResult(Status.INFO, CATEGORY, "8",
+        results.append(CheckResult(Status.PASS, CATEGORY, "8",
             f"files with more than one sit_found==true snippet{sample_note}",
             f"{len(multi_sit_found_examples)}/{files_checked} file(s) have multiple "
             f"sit_found==true snippets (typically multi-page/sheet documents), e.g. "

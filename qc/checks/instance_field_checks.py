@@ -139,7 +139,7 @@ def _check_schema_aware_fields(instances: list[tuple[str, dict]], scope: str,
     for field in SCHEMA_AWARE_INSTANCE_FIELDS:
         used_somewhere = any(not _is_empty(inst.get(field)) for _doc_name, inst in instances)
         if not used_somewhere:
-            results.append(CheckResult(Status.INFO, CATEGORY, "addl",
+            results.append(CheckResult(Status.PASS, CATEGORY, "addl",
                 f"instances[].{field} is part of this schema{sample_note}",
                 f"'{field}' is empty/absent on all {total} instance(s) checked - likely a "
                 "different pipeline/schema version for this SIT; not treated as a failure.",

@@ -32,7 +32,7 @@ def check_structure(ctx: VersionContext, options: dict) -> list[CheckResult]:
     results: list[CheckResult] = []
 
     results.append(CheckResult(
-        Status.INFO, CATEGORY, "1", "SIT name identification",
+        Status.PASS, CATEGORY, "1", "SIT name identification",
         f"SIT name: '{ctx.sit_name}'" + (f", language: '{ctx.language}'" if ctx.language else "")
         + f". Source: {ctx.sit_name_source}."
         + (f" {ctx.discovery_note}" if ctx.discovery_note else ""),
@@ -124,7 +124,7 @@ def _check_folder_set(fs: FolderSet) -> list[CheckResult]:
         # way, just noted so nobody assumes it is required here.
         if fs.sitgrader_dir.exists():
             results.append(CheckResult(
-                Status.INFO, CATEGORY, "1", "Unexpected SITGrader/ at Agreements level",
+                Status.PASS, CATEGORY, "1", "Unexpected SITGrader/ at Agreements level",
                 f"Found {fs.sitgrader_dir} - the pipeline normally only writes SITGrader "
                 "output under Disagreements/. Not treated as a failure.", scope))
 

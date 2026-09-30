@@ -121,7 +121,7 @@ def test_format_distribution_fails_when_it_drifts_from_export_summary_total(tmp_
     assert "total=1, export_summary total=5" in fails[0].detail
 
 
-def test_format_distribution_is_informational_without_export_summary(tmp_path):
+def test_format_distribution_passes_without_export_summary_to_compare(tmp_path):
     ctx = _make_ctx(tmp_path)
     records = [
         _record("doc_1", sit_category="easy positive", file_format="pdf", value="111", polarity="positive", **_DIMS),
@@ -131,7 +131,7 @@ def test_format_distribution_is_informational_without_export_summary(tmp_path):
     results = check_format_distribution(ctx, {})
 
     assert len(results) == 1
-    assert results[0].status == Status.INFO
+    assert results[0].status == Status.PASS
 
 
 def test_business_context_balance_reports_every_dimension(tmp_path):
@@ -150,7 +150,7 @@ def test_business_context_balance_reports_every_dimension(tmp_path):
         "domain", "department", "function", "workflow", "process", "persona", "role", "document_type",
     }
     domain_result = next(r for r in results if r.title.startswith("domain"))
-    assert domain_result.status == Status.INFO
+    assert domain_result.status == Status.PASS
     assert "Healthcare=1" in domain_result.detail
     assert "Finance=1" in domain_result.detail
 

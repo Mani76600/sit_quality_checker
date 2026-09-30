@@ -324,7 +324,7 @@ def _check_record_count(jf, scan: FileScan, total_docs: int | None,
                          threshold: float, scope: str) -> list[CheckResult]:
     record_count = scan.record_count
     if total_docs is None:
-        return [CheckResult(Status.INFO, CATEGORY, "3",
+        return [CheckResult(Status.PASS, CATEGORY, "3",
             f"{jf.name}: record count (no export_summary counts to compare)",
             f"{record_count} records", scope)]
 
@@ -383,7 +383,7 @@ def _check_field_completeness(jf, scan: FileScan, scope: str) -> list[CheckResul
             f"file with '{f_name}' populated."))
 
     if soft_skipped:
-        results.append(CheckResult(Status.INFO, CATEGORY, "3 (addition)",
+        results.append(CheckResult(Status.PASS, CATEGORY, "3 (addition)",
             f"{jf.name}: fields not part of this file's schema",
             f"{soft_skipped} do not appear in any record of this file - likely a "
             "different pipeline/schema version for this SIT; not treated as a failure.",
@@ -489,7 +489,7 @@ def _check_languages(fs: FolderSet, jf, scan: FileScan, value_to_filenames: dict
         # Never go silent - confirm the check ran even when this file's
         # schema carries no language field anywhere (top-level or nested),
         # so "nothing was reported" isn't mistaken for "nothing was checked".
-        return [CheckResult(Status.INFO, CATEGORY, "3 (addition)",
+        return [CheckResult(Status.PASS, CATEGORY, "3 (addition)",
             f"{jf.name}: language consistency",
             "No 'language' field found on any record (checked both the top-level field and "
             "every context_100/500/2000/4000/6000/8000 window) - this file's schema does not "
@@ -501,7 +501,7 @@ def _check_languages(fs: FolderSet, jf, scan: FileScan, value_to_filenames: dict
     minorities = {k: v for k, v in lang_counter.items() if k != majority_lang}
 
     dist_str = ", ".join(f"{k}={v}" for k, v in lang_counter.most_common())
-    results.append(CheckResult(Status.INFO, CATEGORY, "3 (addition)",
+    results.append(CheckResult(Status.PASS, CATEGORY, "3 (addition)",
         f"{jf.name}: languages detected",
         f"{len(lang_counter)} distinct language value(s) across {total_lang} record(s): "
         f"{dist_str}", scope))

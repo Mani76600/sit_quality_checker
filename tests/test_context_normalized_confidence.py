@@ -20,22 +20,23 @@ def test_confidence_entirely_missing_from_schema_is_a_hard_fail(tmp_path):
     hard_fail = [r for r in results if r.status == Status.FAIL and "confidence" in r.title.lower()]
     assert hard_fail, "expected a hard FAIL for confidence missing from the schema entirely"
 
-    info_note = [r for r in results if r.status == Status.INFO]
-    for r in info_note:
+    schema_note = [r for r in results if "fields not part of this file's schema" in r.title]
+    for r in schema_note:
         assert "confidence" not in r.detail  # confidence must not also appear in the soft schema-note
 
 
-def test_other_missing_fields_still_only_info_not_fail(tmp_path):
+def test_other_missing_fields_still_only_pass_not_fail(tmp_path):
     # document_name/doc_id being entirely absent is a known real schema
-    # variant (confirmed on the Sweden sample) - must stay INFO, unaffected
-    # by the new confidence-specific hard-FAIL rule.
+    # variant (confirmed on the Sweden sample) - must stay a benign PASS,
+    # unaffected by the new confidence-specific hard-FAIL rule.
     jf = tmp_path / "sit.json"
     _write(jf, [{"value": "1", "confidence": "85"}, {"value": "2", "confidence": "75"}])
     scan = scan_file(jf)
     results = _check_field_completeness(jf, scan, "Agreements")
     assert not any(r.status == Status.FAIL for r in results)
-    info_note = [r for r in results if r.status == Status.INFO]
-    assert info_note and "document_name" in info_note[0].detail
+    schema_note = [r for r in results if "fields not part of this file's schema" in r.title]
+    assert schema_note and "document_name" in schema_note[0].detail
+    assert schema_note[0].status == Status.PASS
 
 
 def test_check_confidence_is_numeric_pass(tmp_path):

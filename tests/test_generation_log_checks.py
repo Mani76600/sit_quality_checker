@@ -56,10 +56,14 @@ def test_valid_log_passes_everything(tmp_path):
     assert not fails, f"unexpected failures: {fails}"
     assert any("dataset_version matches" in r.title for r in results if r.status == Status.PASS)
     assert any("sit_name matches" in r.title for r in results if r.status == Status.PASS)
-    # the 5 no-ground-truth fields should be reported INFO, not silently skipped
-    info_titles = [r.title for r in results if r.status == Status.INFO]
-    assert any("mce" in t and "version" in t for t in info_titles)
-    assert any("docparser" in t and "version" in t for t in info_titles)
+    # the 5 no-ground-truth fields should be reported PASS (with the caveat
+    # spelled out in the detail text), not silently skipped
+    pass_titles = [
+        r.title for r in results
+        if r.status == Status.PASS and "no reference value to cross-check" in r.title
+    ]
+    assert any("mce" in t and "version" in t for t in pass_titles)
+    assert any("docparser" in t and "version" in t for t in pass_titles)
 
 
 def test_extra_top_level_field_fails(tmp_path):

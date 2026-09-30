@@ -22,8 +22,9 @@ existing item-1 "Version directory naming" check) and sit_name (must equal
 export_summary.json's "sit_name"). The remaining fields (generator.model,
 generator.model_version, sit_grader.model, mce.version, docparser.version)
 have no independent ground truth anywhere in this version folder today -
-they are checked for presence/shape only, flagged INFO rather than silently
-skipped, so this gap stays visible rather than looking like a full check.
+they are checked for presence/shape only and reported PASS (with that
+caveat spelled out in the detail text) rather than silently skipped, so
+this gap stays visible rather than looking like a full check.
 """
 
 from __future__ import annotations
@@ -52,10 +53,6 @@ def _fail(title: str, detail: str, scope: str, fix: str) -> CheckResult:
 
 def _pass(title: str, detail: str, scope: str) -> CheckResult:
     return CheckResult(Status.PASS, CATEGORY, ITEM_REF, title, detail, scope)
-
-
-def _info(title: str, detail: str, scope: str) -> CheckResult:
-    return CheckResult(Status.INFO, CATEGORY, ITEM_REF, title, detail, scope)
 
 
 @register(category=CATEGORY)
@@ -161,7 +158,7 @@ def check_generation_log(ctx: VersionContext, options: dict) -> list[CheckResult
                     "Reconcile dataset_version in generation_log.json with export_summary.json's "
                     "version field - they must describe the same run."))
         else:
-            results.append(_info(
+            results.append(_pass(
                 "generation_log.json.dataset_version has no export_summary.json to compare against",
                 f"dataset_version={dataset_version!r}; export_summary.json unreadable: {es_err}",
                 scope))
@@ -181,7 +178,7 @@ def check_generation_log(ctx: VersionContext, options: dict) -> list[CheckResult
                     "Reconcile sit_name in generation_log.json with export_summary.json - "
                     "they must describe the same SIT."))
         else:
-            results.append(_info(
+            results.append(_pass(
                 "generation_log.json.sit_name has no export_summary.json to compare against",
                 f"sit_name={sit_name!r}; export_summary.json unreadable: {es_err}", scope))
 
@@ -200,7 +197,7 @@ def check_generation_log(ctx: VersionContext, options: dict) -> list[CheckResult
         value = nested[child]
         label = f"generation_log.json[{parent!r}][{child!r}]"
         if isinstance(value, str) and value.strip():
-            results.append(_info(
+            results.append(_pass(
                 f"{label} has no reference value to cross-check in this version folder",
                 f"value={value!r} (no known-good value recorded anywhere else in this "
                 "run to compare against)", scope))

@@ -54,7 +54,7 @@ def test_missing_label_field_is_detected(tmp_path):
     assert "nolabel.json" in missing[0].detail
 
 
-def test_multiple_sit_found_true_reported_as_info_not_failure(tmp_path):
+def test_multiple_sit_found_true_reported_as_pass_not_failure(tmp_path):
     polarity = _polarity(tmp_path)
     _write_chunk(polarity.chunks / "multi.json", [
         {"index": 0, "label": True, "sit_found": True},
@@ -62,7 +62,7 @@ def test_multiple_sit_found_true_reported_as_info_not_failure(tmp_path):
     ])
     results = _check_chunk_label_consistency(FolderSet("Agreements", tmp_path), "Positive", polarity, _opts())
     multi = [r for r in results if "more than one sit_found" in r.title]
-    assert multi and multi[0].status == Status.INFO
+    assert multi and multi[0].status == Status.PASS
     assert "multi.json" in multi[0].detail
     # and the consistency check itself still passes - multiple matching
     # snippets is not itself a violation

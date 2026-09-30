@@ -161,7 +161,7 @@ def _check_sit_identity(ctx: VersionContext, fs: FolderSet, polarity_name: str,
     if not polarity.raw_doc.exists():
         return results
 
-    results.append(CheckResult(Status.INFO, CATEGORY, "9 (filename)",
+    results.append(CheckResult(Status.PASS, CATEGORY, "9 (filename)",
         "SIT number as filename prefix/suffix",
         "N/A for this pipeline: raw_doc filenames are a content-slug + random hex "
         "(e.g. 'academic-record-...-65fd3ec6cf55.docx') and never embed a SIT number. "

@@ -41,7 +41,7 @@ def check_integrity(ctx: VersionContext, options: dict) -> list[CheckResult]:
         for polarity_name, polarity in (("Positive", fs.positive), ("Negative", fs.negative)):
             results.extend(_check_polarity_files(fs.name, polarity_name, polarity, options))
 
-    results.append(CheckResult(Status.INFO, CATEGORY, "addl",
+    results.append(CheckResult(Status.PASS, CATEGORY, "addl",
         "Boolean-field type note",
         "This pipeline mixes real JSON booleans (e.g. chunk snippet 'label'/'sit_found') with "
         "string-typed booleans (e.g. instance 'expected_engine_match', 'semantic_ground_truth' "

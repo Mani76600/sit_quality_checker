@@ -37,7 +37,7 @@ def test_check_languages_never_silently_returns_nothing(tmp_path):
     scan = scan_file(jf)
     results = _check_languages(ctx.agreements, jf, scan, {}, "Agreements")
     assert len(results) >= 1
-    assert results[0].status == Status.INFO
+    assert results[0].status == Status.PASS
     assert "no" in results[0].detail.lower() or "language" in results[0].title.lower()
 
 

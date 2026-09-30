@@ -52,14 +52,14 @@ def test_missing_required_field_fails(tmp_path):
     assert "validation_status" in required_result.detail
 
 
-def test_schema_aware_field_entirely_absent_is_info(tmp_path):
+def test_schema_aware_field_entirely_absent_is_pass(tmp_path):
     ctx = _ctx(tmp_path)
     _write_metadata(ctx.agreements.positive.root, "doc1", [_base_instance(chunk_label=None)])
     _write_metadata(ctx.agreements.positive.root, "doc2", [_base_instance(chunk_label="")])
     results = check_instance_fields(ctx, {})
     chunk_label_result = next(r for r in results if "chunk_label" in r.title
                               and r.scope == "Agreements / Positive")
-    assert chunk_label_result.status == Status.INFO
+    assert chunk_label_result.status == Status.PASS
 
 
 def test_schema_aware_field_partially_empty_fails(tmp_path):
@@ -85,7 +85,8 @@ def test_schema_aware_field_fully_populated_passes(tmp_path):
 
 def test_positive_and_negative_pools_never_mixed(tmp_path):
     # chunk_label used in Negative but never in Positive - Positive pool must
-    # report INFO (not used here), not a FAIL contaminated by Negative's usage.
+    # report a benign PASS (not used here), not a FAIL contaminated by
+    # Negative's usage.
     ctx = _ctx(tmp_path)
     _write_metadata(ctx.agreements.positive.root, "doc1", [_base_instance(chunk_label=None)])
     _write_metadata(ctx.agreements.negative.root, "doc2", [_base_instance(chunk_label="Negative")])
@@ -94,7 +95,7 @@ def test_positive_and_negative_pools_never_mixed(tmp_path):
                       and r.scope == "Agreements / Positive")
     neg_result = next(r for r in results if "chunk_label" in r.title
                       and r.scope == "Agreements / Negative")
-    assert pos_result.status == Status.INFO
+    assert pos_result.status == Status.PASS
     assert neg_result.status == Status.PASS
 
 

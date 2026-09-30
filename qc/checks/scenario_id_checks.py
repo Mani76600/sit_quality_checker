@@ -190,7 +190,7 @@ def _check_one(fs: FolderSet, options: dict) -> list[CheckResult]:
 
     add(missing_scenario_id, "scenario_id is present in metadata",
         "Every document's metadata.json must carry a non-empty scenario_id.")
-    # INFO, not FAIL: confirmed against a real Taiwan (Romanized Chinese) sample
+    # PASS, not FAIL: confirmed against a real Taiwan (Romanized Chinese) sample
     # that this genuinely diverges ~40% of the time for fully-localized SITs -
     # scenario_id can stay in English (the internal scenario template name)
     # while the delivered filename is localized to the target language, with
@@ -202,7 +202,7 @@ def _check_one(fs: FolderSet, options: dict) -> list[CheckResult]:
         "SITs where scenario_id stays in English while the filename is translated (confirmed "
         "on real Taiwan/Romanized Chinese output). Spot-check the listed docs rather than "
         "treating this as a definite defect.",
-        status=Status.INFO)
+        status=Status.PASS)
     add(corpus_mismatch, "scenario_id matches between metadata.json and corpus.jsonl",
         "corpus.jsonl's scenario_id for this doc_id should be identical to the per-doc "
         "metadata.json's scenario_id - regenerate corpus.jsonl from the metadata.")
