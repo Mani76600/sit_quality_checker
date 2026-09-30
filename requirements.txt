@@ -4,3 +4,4 @@ pytest>=7.0
 fpdf2>=2.7
 py7zr>=0.20
 ijson>=3.2
+pypdf>=4.0  # test-only: extracting real text from render_pdf()'s output to verify it

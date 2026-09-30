@@ -35,6 +35,21 @@ def _category_sort_key(category: str):
     return (int(m.group(1)) if m else 999, category)
 
 
+_LEADING_NUMBER_RE = re.compile(r"^\d+[a-z]?(?:-\d+)?\.\s*")
+
+
+def _display_category(category: str) -> str:
+    """User-facing category name with any leading checklist-item number
+    stripped ("3. context_output_normalized" -> "context_output_normalized") -
+    same rationale and same pattern as streamlit_report.py's own
+    _display_category: the number no longer carries navigational meaning
+    (there's no on-screen jump target in a static HTML/PDF export either)
+    and just reads as noise, especially next to the newer unnumbered
+    "... (addition)" categories. Sorting/grouping still use the raw
+    category string via _category_sort_key above."""
+    return _LEADING_NUMBER_RE.sub("", category)
+
+
 def _grouped(report: RunReport):
     grouped = report.by_category()
     return sorted(grouped.items(), key=lambda kv: _category_sort_key(kv[0]))
@@ -79,9 +94,8 @@ def render_html(report: RunReport) -> str:
   .examples {{ margin: 0.3rem 0 0.2rem 0; padding-left: 1.3rem; font-size: 0.88rem; }}
   .examples li {{ margin: 0.15rem 0; }}
   .passed-summary {{ font-size: 0.85rem; color: #57606a; margin-bottom: 0.3rem; }}
-  .passed-list {{ font-size: 0.85rem; color: #57606a; columns: 2; column-gap: 1.5rem;
-                  padding-left: 1.2rem; }}
-  .passed-list li {{ margin: 0.15rem 0; break-inside: avoid; }}
+  .passed-table {{ font-size: 0.83rem; color: #57606a; margin-bottom: 1rem; }}
+  .passed-table th {{ font-size: 0.8rem; }}
 </style></head><body>
 <h1>SIT Output Quality Report</h1>
 <div class="path"><strong>{html.escape(report.label)}</strong><br>{html.escape(report.version_dir)}</div>
@@ -107,12 +121,12 @@ def render_html(report: RunReport) -> str:
             bits.append(f"{cat_counts['WARN']} warning(s)")
         parts.append(
             f'<tr><td><span class="badge" style="background:{STATUS_COLOR[worst]}">'
-            f'{STATUS_ICON[worst]}</span></td><td>{html.escape(category)}</td>'
+            f'{STATUS_ICON[worst]}</span></td><td>{html.escape(_display_category(category))}</td>'
             f"<td>{html.escape(', '.join(bits))}</td></tr>\n")
     parts.append("</table>\n")
 
     for category, results in _grouped(report):
-        parts.append(f'<div class="cat"><h2>{html.escape(category)}</h2>\n')
+        parts.append(f'<div class="cat"><h2>{html.escape(_display_category(category))}</h2>\n')
         actionable = [r for r in results if r.status != Status.PASS]
         passed = [r for r in results if r.status == Status.PASS]
         for r in actionable:
@@ -132,13 +146,15 @@ def render_html(report: RunReport) -> str:
                 + "</div>\n")
         if passed:
             parts.append(f'<div class="passed-summary">{len(passed)} passed check(s):</div>\n')
-            parts.append('<ul class="passed-list">')
+            parts.append('<table class="passed-table"><tr><th>Title</th><th>Scope</th><th>Detail</th></tr>')
             for p in passed:
-                title_html = html.escape(p.title)
-                if p.scope:
-                    title_html += f' <span style="color:#8b949e">({html.escape(p.scope)})</span>'
-                parts.append(f"<li>{title_html}</li>")
-            parts.append("</ul>\n")
+                lead, _examples = split_detail(p.detail)
+                parts.append(
+                    f"<tr><td>{html.escape(p.title)}</td>"
+                    f"<td>{html.escape(p.scope)}</td>"
+                    f"<td>{html.escape(lead)}</td></tr>"
+                )
+            parts.append("</table>\n")
         parts.append("</div>\n")
 
     parts.append("</body></html>")
@@ -202,13 +218,13 @@ def render_pdf(report: RunReport) -> bytes:
         if cat_counts["WARN"]:
             bits.append(f"{cat_counts['WARN']} warning(s)")
         worst = next((s for s in STATUS_ORDER if cat_counts[s]), Status.PASS.value)
-        pdf.multi_cell(0, 5, _clean(f"[{worst}] {category}: {', '.join(bits)}"),
+        pdf.multi_cell(0, 5, _clean(f"[{worst}] {_display_category(category)}: {', '.join(bits)}"),
                         new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
     for category, results in _grouped(report):
         pdf.set_font("Helvetica", "B", 12)
-        pdf.multi_cell(0, 7, _clean(category), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 7, _clean(_display_category(category)), new_x="LMARGIN", new_y="NEXT")
         actionable = [r for r in results if r.status != Status.PASS]
         passed = [r for r in results if r.status == Status.PASS]
         pdf.set_font("Helvetica", "", 9)
@@ -233,6 +249,9 @@ def render_pdf(report: RunReport) -> bytes:
                             new_x="LMARGIN", new_y="NEXT")
             for p in passed:
                 label = f"    - {p.title} ({p.scope})" if p.scope else f"    - {p.title}"
+                lead, _examples = split_detail(p.detail)
+                if lead:
+                    label += f": {lead}"
                 pdf.multi_cell(0, 4, _clean(label), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
 
