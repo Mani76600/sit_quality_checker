@@ -22,7 +22,7 @@ from qc.models import CheckResult, Status
 from qc.registry import register
 from qc.checks._common import sample as _sample
 
-CATEGORY = "Integrity (addition)"
+CATEGORY = "Integrity"
 
 MAX_ZERO_BYTE_REPORTED = 20
 

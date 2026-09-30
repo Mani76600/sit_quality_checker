@@ -45,7 +45,7 @@ from qc.jsonio import read_json_cached, to_bool
 from qc.models import CheckResult, Status
 from qc.registry import register
 
-CATEGORY = "Metadata Instance Fields (addition)"
+CATEGORY = "Metadata Instance Fields"
 
 REQUIRED_INSTANCE_FIELDS = [
     "actual_engine_confidence", "actual_engine_result", "allocation_key",

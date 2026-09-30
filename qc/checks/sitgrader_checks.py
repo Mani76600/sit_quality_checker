@@ -34,7 +34,7 @@ from qc.jsonio import count_jsonl_lines, read_json
 from qc.models import CheckResult, Status
 from qc.registry import register
 
-CATEGORY = "SITGrader Consistency (addition)"
+CATEGORY = "SITGrader Consistency"
 
 
 def _scan_jsonl_fields(path: Path, fields: tuple[str, ...]) -> tuple[int, dict[str, Counter], list[str]]:

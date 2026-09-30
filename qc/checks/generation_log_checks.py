@@ -1,4 +1,4 @@
-"""Generation Log Consistency (addition): validates generation_log.json, a
+"""Generation Log Consistency: validates generation_log.json, a
 manifest written once at the top level of each Version_* folder (sibling to
 export_summary.json / corpus.jsonl / sit_inverted_index.json - NOT duplicated
 under Disagreements/), recording which models/tool versions produced this run.
@@ -34,7 +34,7 @@ from qc.jsonio import read_json
 from qc.models import CheckResult, Status
 from qc.registry import register
 
-CATEGORY = "Generation Log Consistency (addition)"
+CATEGORY = "Generation Log Consistency"
 ITEM_REF = "addl"
 
 TOP_LEVEL_STRING_KEYS = {"schema_version", "dataset_version", "generated_at", "sit_name"}

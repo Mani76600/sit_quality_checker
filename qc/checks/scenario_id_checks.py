@@ -50,7 +50,7 @@ from qc.models import CheckResult, Status
 from qc.registry import register
 from qc.checks._common import sample as _sample
 
-CATEGORY = "Scenario ID Consistency (addition)"
+CATEGORY = "Scenario ID Consistency"
 
 TRAILING_TOKEN_RE = re.compile(r"-([0-9a-f]{1,16})$", re.IGNORECASE)
 NON_ASCII_ALNUM_RE = re.compile(r"[^a-z0-9]+")

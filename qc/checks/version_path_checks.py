@@ -25,7 +25,7 @@ from qc.registry import register
 from qc.checks._common import metadata_files as _metadata_files
 from qc.checks._common import sample as _sample
 
-CATEGORY = "Version Path Consistency (addition)"
+CATEGORY = "Version Path Consistency"
 
 VERSION_RE = re.compile(r"Version_\d{8}_\d{4}")
 

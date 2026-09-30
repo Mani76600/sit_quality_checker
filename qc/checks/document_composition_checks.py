@@ -39,10 +39,10 @@ from qc.jsonio import read_json, read_jsonl_cached
 from qc.models import CheckResult, Status
 from qc.registry import register
 
-CATEGORY_LABEL = "Label Distribution (Easy/Hard x Positive/Negative) (addition)"
-CATEGORY_FORMAT = "Document Format Distribution (addition)"
-CATEGORY_CONTEXT = "Business Context Balance (addition)"
-CATEGORY_DIVERSITY = "SIT Value Reuse - all difficulties (effective_hard_diversity) (addition)"
+CATEGORY_LABEL = "Label Distribution (Easy/Hard x Positive/Negative)"
+CATEGORY_FORMAT = "Document Format Distribution"
+CATEGORY_CONTEXT = "Business Context Balance"
+CATEGORY_DIVERSITY = "SIT Value Reuse - all difficulties (effective_hard_diversity)"
 ITEM_REF = "addl"
 
 _LABEL_BUCKETS = ("easy positive", "hard positive", "easy negative", "hard negative")
