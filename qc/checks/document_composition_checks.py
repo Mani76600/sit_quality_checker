@@ -15,11 +15,18 @@ package (corpus_field_checks.py, export_summary.py):
    WARN if one value dominates a dimension, matching the same
    concentration-flag idea pipeline_metrics.py already uses for format/
    archetype diversity.
-4. Effective hard diversity: whether any planted SIT value (sit_values for
-   positive records, lookalike_values for negative records) is reused
-   across more than one document - mirrors pipeline_metrics.py's own
-   _hard_diversity formula (1.0 - reused/total), computed separately per
-   polarity exactly like that function's by_polarity breakdown.
+4. SIT value reuse (effective_hard_diversity): whether any planted SIT
+   value (sit_values for positive records, lookalike_values for negative
+   records) is reused across more than one document - mirrors
+   pipeline_metrics.py's own _hard_diversity formula (1.0 - reused/total),
+   computed separately per polarity exactly like that function's
+   by_polarity breakdown. Pools easy and hard instances together (the
+   "hard" in effective_hard_diversity names a diversity-metric TYPE -
+   value-level reuse, as opposed to pipeline_metrics.py's "soft" format/
+   archetype diversity - it has nothing to do with the easy/hard
+   difficulty tier used elsewhere in this report), and additionally
+   reports how each found duplicate breaks down across easy/hard so that
+   distinction isn't lost.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ from qc.registry import register
 CATEGORY_LABEL = "Label Distribution (Easy/Hard x Positive/Negative) (addition)"
 CATEGORY_FORMAT = "Document Format Distribution (addition)"
 CATEGORY_CONTEXT = "Business Context Balance (addition)"
-CATEGORY_DIVERSITY = "Effective Hard Diversity (SIT Value Reuse) (addition)"
+CATEGORY_DIVERSITY = "SIT Value Reuse - all difficulties (effective_hard_diversity) (addition)"
 ITEM_REF = "addl"
 
 _LABEL_BUCKETS = ("easy positive", "hard positive", "easy negative", "hard negative")
@@ -203,6 +210,11 @@ def check_effective_hard_diversity(ctx: VersionContext, options: dict) -> list[C
     return results
 
 
+def _difficulty(rec: dict) -> str:
+    words = _sit_category(rec).split()
+    return words[0] if words and words[0] in ("easy", "hard") else "unknown"
+
+
 def _check_effective_hard_diversity_one(fs: FolderSet) -> list[CheckResult]:
     scope = fs.name
     records, _errors = read_jsonl_cached(fs.combined_metadata)
@@ -210,39 +222,62 @@ def _check_effective_hard_diversity_one(fs: FolderSet) -> list[CheckResult]:
         return []
     results: list[CheckResult] = []
     for polarity, field_name in (("positive", "sit_values"), ("negative", "lookalike_values")):
-        normalized_to_docs: dict[str, list[str]] = {}
+        # value -> list of (doc_id, difficulty) entries planting that value
+        normalized_to_entries: dict[str, list[tuple[str, str]]] = {}
         total_values = 0
         for rec in records:
             values_by_sit = rec.get(field_name)
             if not isinstance(values_by_sit, dict):
                 continue
             doc_id = str(rec.get("doc_id") or rec.get("stem") or "?")
+            difficulty = _difficulty(rec)
             for values in values_by_sit.values():
                 if not isinstance(values, list):
                     continue
                 for value in values:
                     total_values += 1
-                    normalized_to_docs.setdefault(_normalize_value(str(value)), []).append(doc_id)
+                    normalized_to_entries.setdefault(_normalize_value(str(value)), []).append(
+                        (doc_id, difficulty)
+                    )
         if not total_values:
             continue
-        duplicated = {norm: docs for norm, docs in normalized_to_docs.items() if len(docs) > 1}
-        reused_instances = sum(len(docs) - 1 for docs in duplicated.values())
+        duplicated = {
+            norm: entries for norm, entries in normalized_to_entries.items() if len(entries) > 1
+        }
+        reused_instances = sum(len(entries) - 1 for entries in duplicated.values())
         effective_hard_diversity = 1.0 - (reused_instances / total_values)
+
+        # How each duplicated value's occurrences break down: all-easy,
+        # all-hard, or a mix of both - so pooling easy+hard together for the
+        # headline number doesn't hide which difficulty tier is affected.
+        shape_counts: Counter[str] = Counter()
+        for entries in duplicated.values():
+            difficulties = {d for _doc, d in entries}
+            if difficulties == {"easy"}:
+                shape_counts["easy-easy"] += 1
+            elif difficulties == {"hard"}:
+                shape_counts["hard-hard"] += 1
+            else:
+                shape_counts["easy-hard (mixed)"] += 1
+        breakdown = ", ".join(f"{shape}={n}" for shape, n in shape_counts.items())
+
         detail = (
-            f"{total_values} {polarity} value instance(s) across {len(normalized_to_docs)} "
+            f"{total_values} {polarity} value instance(s) across {len(normalized_to_entries)} "
             f"distinct value(s); {len(duplicated)} value(s) reused "
-            f"({reused_instances} redundant instance(s)); "
-            f"effective_hard_diversity={effective_hard_diversity:.3f}"
+            f"({reused_instances} redundant instance(s))"
+            + (f", by difficulty: {breakdown}" if breakdown else "")
+            + f"; effective_hard_diversity={effective_hard_diversity:.3f}"
         )
         if duplicated:
             examples = [
-                f"{docs[0]} & {docs[1]}" + (f" (+{len(docs) - 2} more)" if len(docs) > 2 else "")
-                for docs in list(duplicated.values())[:5]
+                f"{entries[0][0]} & {entries[1][0]}"
+                + (f" (+{len(entries) - 2} more)" if len(entries) > 2 else "")
+                for entries in list(duplicated.values())[:5]
             ]
             results.append(CheckResult(Status.WARN, CATEGORY_DIVERSITY, ITEM_REF,
                 f"{polarity} SIT value reuse (effective_hard_diversity)", detail, scope,
                 "Duplicate planted values reduce corpus diversity - examples: " + "; ".join(examples),
-                evidence=[doc for docs in duplicated.values() for doc in docs[:2]][:10]))
+                evidence=[doc for entries in duplicated.values() for doc, _d in entries[:2]][:10]))
         else:
             results.append(CheckResult(Status.PASS, CATEGORY_DIVERSITY, ITEM_REF,
                 f"{polarity} SIT value reuse (effective_hard_diversity)", detail, scope))

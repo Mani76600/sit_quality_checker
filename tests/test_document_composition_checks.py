@@ -204,6 +204,39 @@ def test_effective_hard_diversity_warns_on_reused_value(tmp_path):
     assert "effective_hard_diversity=0.667" in positive_result.detail
 
 
+def test_effective_hard_diversity_pools_easy_and_hard_but_reports_the_split(tmp_path):
+    """The duplicate-detection loop must not filter by difficulty at all -
+    an easy value reused as a hard value (or vice versa) is exactly as much
+    a diversity problem as two easy (or two hard) duplicates, so all of
+    them get pooled into one reuse count. The breakdown in the detail text
+    exists only so a human can tell WHICH difficulty tier(s) were involved,
+    not to exclude any of them from detection."""
+    ctx = _make_ctx(tmp_path)
+    records = [
+        # easy vs easy duplicate
+        _record("doc_1", sit_category="easy positive", file_format="pdf", value="111-11-1111", polarity="positive", **_DIMS),
+        _record("doc_2", sit_category="easy positive", file_format="pdf", value="111111111", polarity="positive", **_DIMS),
+        # hard vs hard duplicate
+        _record("doc_3", sit_category="hard positive", file_format="pdf", value="222-22-2222", polarity="positive", **_DIMS),
+        _record("doc_4", sit_category="hard positive", file_format="pdf", value="222222222", polarity="positive", **_DIMS),
+        # easy vs hard duplicate (mixed) - must still be caught
+        _record("doc_5", sit_category="easy positive", file_format="pdf", value="333-33-3333", polarity="positive", **_DIMS),
+        _record("doc_6", sit_category="hard positive", file_format="pdf", value="333333333", polarity="positive", **_DIMS),
+        # a lone, non-duplicated value
+        _record("doc_7", sit_category="hard positive", file_format="pdf", value="999-99-9999", polarity="positive", **_DIMS),
+    ]
+    _write_combined_metadata(ctx, records)
+
+    results = check_effective_hard_diversity(ctx, {})
+
+    positive_result = next(r for r in results if "positive" in r.title)
+    assert positive_result.status == Status.WARN
+    assert "3 value(s) reused" in positive_result.detail
+    assert "easy-easy=1" in positive_result.detail
+    assert "hard-hard=1" in positive_result.detail
+    assert "easy-hard (mixed)=1" in positive_result.detail
+
+
 def test_all_checks_return_nothing_when_combined_metadata_is_absent(tmp_path):
     ctx = _make_ctx(tmp_path)
     assert check_label_distribution(ctx, {}) == []
