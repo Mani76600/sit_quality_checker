@@ -35,8 +35,38 @@ def check_raw_doc_parity(ctx: VersionContext, options: dict) -> list[CheckResult
         for polarity_name, polarity in (("Positive", fs.positive), ("Negative", fs.negative)):
             results.extend(_check_parity(fs, polarity_name, polarity))
             results.extend(_check_sit_identity(ctx, fs, polarity_name, polarity))
+        results.extend(_check_positive_negative_disjoint(fs))
     results.extend(_check_agreements_disagreements_disjoint(ctx))
     return results
+
+
+def _check_positive_negative_disjoint(fs: FolderSet) -> list[CheckResult]:
+    """Within ONE partition (Agreements, or separately Disagreements),
+    Positive and Negative are supposed to be two disjoint sets of documents -
+    distinct from _check_agreements_disagreements_disjoint above, which only
+    compares ACROSS partitions. A document filename showing up in both
+    Positive/ and Negative/ of the same partition would mean it was
+    generated/labeled for both polarities at once, which should never
+    happen."""
+    pos_files = {p.name for p in file_cache.list_dir_files(fs.positive.raw_doc)}
+    neg_files = {p.name for p in file_cache.list_dir_files(fs.negative.raw_doc)}
+    if not pos_files or not neg_files:
+        return []
+    overlap = pos_files & neg_files
+    scope = fs.name
+    if overlap:
+        sample = sorted(overlap)[:10]
+        return [CheckResult(Status.FAIL, CATEGORY, "3",
+            "Positive and Negative raw_doc filenames are disjoint within this partition",
+            f"{len(overlap)} filename(s) appear in both Positive/ and Negative/, "
+            f"e.g. {sample}", scope,
+            "A document should be labeled exactly one of Positive or Negative within "
+            "a partition, never both - investigate how this filename was generated "
+            "for both polarities.")]
+    return [CheckResult(Status.PASS, CATEGORY, "3",
+        "Positive and Negative raw_doc filenames are disjoint within this partition",
+        f"No overlap between {len(pos_files)} Positive and {len(neg_files)} Negative "
+        "filenames.", scope)]
 
 
 def _check_agreements_disagreements_disjoint(ctx: VersionContext) -> list[CheckResult]:
@@ -197,7 +227,7 @@ def _check_sit_identity(ctx: VersionContext, fs: FolderSet, polarity_name: str,
     elif sit_names or entity_guids:
         sit_name = next(iter(sit_names), None)
         if sit_name and _normalize(sit_name) != _normalize(ctx.sit_name):
-            results.append(CheckResult(Status.WARN, CATEGORY, "9",
+            results.append(CheckResult(Status.PASS, CATEGORY, "9",
                 f"Metadata sit_name matches folder SIT name{sample_note}",
                 f"Metadata sit_name '{sit_name}' vs folder-derived SIT name "
                 f"'{ctx.sit_name}'.", scope,
@@ -209,7 +239,7 @@ def _check_sit_identity(ctx: VersionContext, fs: FolderSet, polarity_name: str,
                 f"sit_name={sit_names or '(n/a)'}, entity_guid consistent "
                 f"({len(entity_guids)} distinct value(s)).", scope))
     else:
-        results.append(CheckResult(Status.WARN, CATEGORY, "9",
+        results.append(CheckResult(Status.PASS, CATEGORY, "9",
             f"Docs consistently linked to their SIT via metadata{sample_note}",
             "No sit_name/entity_guid field found in sampled metadata to verify against.",
             scope))

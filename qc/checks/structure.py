@@ -101,14 +101,24 @@ def _check_folder_set(fs: FolderSet) -> list[CheckResult]:
     if fs.name == "Disagreements":
         if fs.sitgrader_dir.exists():
             chunk_runs = fs.chunk_run_dirs()
+            legacy_runs = fs.legacy_benchmark_run_dirs()
             if chunk_runs:
                 results.append(CheckResult(
                     Status.PASS, CATEGORY, "1", "SITGrader/chunk_run_*/ present",
                     f"{len(chunk_runs)} run(s): {', '.join(p.name for p in chunk_runs)}", scope))
+            elif legacy_runs:
+                results.append(CheckResult(
+                    Status.PASS, CATEGORY, "1", "SITGrader/chunk_run_*/ present",
+                    f"No chunk_run_* found, but {len(legacy_runs)} legacy run_benchmark_* "
+                    f"run(s) present: {', '.join(p.name for p in legacy_runs)}. This is an "
+                    "older SITGrader naming convention - its internal content is not "
+                    "validated by this tool (sitgrader_checks.py only understands the "
+                    "current chunk_run_*/chunk_summary.json schema).", scope))
             else:
                 results.append(CheckResult(
                     Status.FAIL, CATEGORY, "1", "SITGrader/chunk_run_*/ present",
-                    f"SITGrader/ exists but has no chunk_run_* subdirectory: {fs.sitgrader_dir}",
+                    f"SITGrader/ exists but has no chunk_run_* (or legacy run_benchmark_*) "
+                    f"subdirectory: {fs.sitgrader_dir}",
                     scope, "Re-run SITGrader for this Disagreements set."))
             results.append(_exists(
                 fs.sitgrader_misc, "SITGrader/misc/ present",

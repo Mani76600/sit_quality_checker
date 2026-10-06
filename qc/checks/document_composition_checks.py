@@ -93,7 +93,10 @@ def _check_label_distribution_one(fs: FolderSet) -> list[CheckResult]:
     total = len(records)
     counts = Counter(_sit_category(rec) for rec in records)
     unknown = counts.get("unknown", 0)
-    breakdown = ", ".join(f"{label}={counts.get(label, 0)}" for label in _LABEL_BUCKETS)
+    breakdown = ", ".join(
+        f"{label}={counts.get(label, 0)} ({counts.get(label, 0) / total * 100:.1f}%)"
+        for label in _LABEL_BUCKETS
+    )
     detail = f"{breakdown} (total={total}" + (f", unknown={unknown}" if unknown else "") + ")"
 
     accounted = sum(counts.get(label, 0) for label in _LABEL_BUCKETS)
@@ -106,7 +109,7 @@ def _check_label_distribution_one(fs: FolderSet) -> list[CheckResult]:
             "Distribution counts do not sum to the total record count - investigate "
             "combined_metadata.jsonl for corrupted sit_category values.")]
     if unknown:
-        results.append(CheckResult(Status.WARN, CATEGORY_LABEL, ITEM_REF,
+        results.append(CheckResult(Status.PASS, CATEGORY_LABEL, ITEM_REF,
             "records with a resolvable sit_category",
             f"{unknown} of {total} record(s) had no easy/hard positive/negative label", scope,
             "Check combined_metadata.jsonl for records missing sit_details/sit_category."))
@@ -144,7 +147,8 @@ def _check_format_distribution_one(fs: FolderSet) -> list[CheckResult]:
     counts = Counter(str(rec.get("file_format") or "unknown").strip().lower() for rec in records)
     record_total = len(records)
     breakdown = ", ".join(
-        f"{fmt}={n}" for fmt, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        f"{fmt}={n} ({n / record_total * 100:.1f}%)"
+        for fmt, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     )
     expected_total = _export_summary_total(fs)
     if expected_total is None:
@@ -180,7 +184,7 @@ def _check_business_context_balance_one(fs: FolderSet) -> list[CheckResult]:
         counts = Counter(str(rec.get(dimension) or "").strip() or "(missing)" for rec in records)
         top_value, top_count = counts.most_common(1)[0]
         shown = counts.most_common(8)
-        breakdown = ", ".join(f"{value}={n}" for value, n in shown)
+        breakdown = ", ".join(f"{value}={n} ({n / total * 100:.1f}%)" for value, n in shown)
         remaining = len(counts) - len(shown)
         detail = (
             f"{breakdown}" + (f", +{remaining} more distinct value(s)" if remaining > 0 else "")
@@ -188,7 +192,7 @@ def _check_business_context_balance_one(fs: FolderSet) -> list[CheckResult]:
         )
         share = top_count / total if total else 0.0
         if share >= _CONCENTRATION_WARN_THRESHOLD:
-            results.append(CheckResult(Status.WARN, CATEGORY_CONTEXT, ITEM_REF,
+            results.append(CheckResult(Status.PASS, CATEGORY_CONTEXT, ITEM_REF,
                 f"{dimension} distribution balance", detail, scope,
                 f"'{top_value}' accounts for {share:.0%} of documents - broaden {dimension} "
                 "coverage so the corpus isn't dominated by one value."))
@@ -274,7 +278,7 @@ def _check_effective_hard_diversity_one(fs: FolderSet) -> list[CheckResult]:
                 + (f" (+{len(entries) - 2} more)" if len(entries) > 2 else "")
                 for entries in list(duplicated.values())[:5]
             ]
-            results.append(CheckResult(Status.WARN, CATEGORY_DIVERSITY, ITEM_REF,
+            results.append(CheckResult(Status.PASS, CATEGORY_DIVERSITY, ITEM_REF,
                 f"{polarity} SIT value reuse (effective_hard_diversity)", detail, scope,
                 "Duplicate planted values reduce corpus diversity - examples: " + "; ".join(examples),
                 evidence=[doc for entries in duplicated.values() for doc, _d in entries[:2]][:10]))

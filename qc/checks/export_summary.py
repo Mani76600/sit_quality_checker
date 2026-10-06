@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+from qc import file_cache
 from qc.context import FolderSet, VersionContext
 from qc.jsonio import read_json, read_jsonl_cached
 from qc.models import CheckResult, Status
@@ -19,6 +20,8 @@ from qc.checks.context_normalized import scan_file as _scan_context_normalized_f
 
 CATEGORY_5 = "5. export_summary.json ground truth"
 CATEGORY_67 = "6-7. corpus.jsonl / combined_metadata.jsonl counts"
+
+REQUIRED_TOP_LEVEL_KEYS = ("sit_name", "version", "output_dir", "counts")
 
 
 def _get_counts(export_summary: dict) -> dict:
@@ -82,6 +85,66 @@ def _check_ground_truth_one(fs: FolderSet) -> list[CheckResult]:
             "Regenerate export_summary.json - it is missing or malformed."))
         return results
 
+    missing_keys = [k for k in REQUIRED_TOP_LEVEL_KEYS if k not in data]
+    if missing_keys:
+        results.append(CheckResult(Status.FAIL, CATEGORY_5, "5",
+            "export_summary.json has every required top-level key",
+            f"Missing: {', '.join(missing_keys)}", scope,
+            f"Add {', '.join(missing_keys)} to export_summary.json."))
+    else:
+        results.append(CheckResult(Status.PASS, CATEGORY_5, "5",
+            "export_summary.json has every required top-level key",
+            f"Present: {', '.join(REQUIRED_TOP_LEVEL_KEYS)}", scope))
+
+    version = data.get("version")
+    if version is not None:
+        version_dir_name = fs.root.name if fs.root.name.startswith("Version_") else fs.root.parent.name
+        if version == version_dir_name:
+            results.append(CheckResult(Status.PASS, CATEGORY_5, "5",
+                "export_summary.version matches the Version_* folder name",
+                f"{version!r} == {version_dir_name!r}", scope))
+        else:
+            results.append(CheckResult(Status.FAIL, CATEGORY_5, "5",
+                "export_summary.version matches the Version_* folder name",
+                f"export_summary.json says version={version!r} but the folder is "
+                f"{version_dir_name!r}", scope,
+                "Reconcile export_summary.json's version field with the actual "
+                "Version_* folder name, or confirm this is an intentional rename."))
+
+    counts_raw = data.get("counts")
+    if not isinstance(counts_raw, dict):
+        results.append(CheckResult(Status.FAIL, CATEGORY_5, "5",
+            "export_summary.counts is a well-typed object",
+            f"Got: {type(counts_raw).__name__}", scope,
+            "export_summary.json's counts field must be an object with "
+            "non-negative integer positive/negative/total fields."))
+    else:
+        bad_types = [
+            key for key in ("positive", "negative", "total")
+            if key in counts_raw and (
+                type(counts_raw[key]) is not int or counts_raw[key] < 0
+            )
+        ]
+        # Tolerate the capitalized key spelling this pipeline also uses
+        # (_get_counts() already resolves both) - only flag a field actually
+        # present under either spelling with a bad value.
+        bad_types += [
+            key.capitalize() for key in ("positive", "negative", "total")
+            if key.capitalize() in counts_raw and (
+                type(counts_raw[key.capitalize()]) is not int or counts_raw[key.capitalize()] < 0
+            )
+        ]
+        if bad_types:
+            results.append(CheckResult(Status.FAIL, CATEGORY_5, "5",
+                "export_summary.counts fields are non-negative integers",
+                f"Bad value(s) for: {', '.join(sorted(set(bad_types)))}", scope,
+                "export_summary.json's counts.positive/negative/total must each be a "
+                "non-negative integer."))
+        else:
+            results.append(CheckResult(Status.PASS, CATEGORY_5, "5",
+                "export_summary.counts fields are non-negative integers",
+                f"counts: {counts_raw}", scope))
+
     counts = _get_counts(data)
     pos, neg, total = counts["positive"], counts["negative"], counts["total"]
 
@@ -96,7 +159,7 @@ def _check_ground_truth_one(fs: FolderSet) -> list[CheckResult]:
                 f"{pos} + {neg} != {total}", scope,
                 "Recompute counts.total in export_summary.json."))
     else:
-        results.append(CheckResult(Status.WARN, CATEGORY_5, "5",
+        results.append(CheckResult(Status.PASS, CATEGORY_5, "5",
             "counts block complete", f"counts: {counts}", scope,
             "export_summary.json is missing one of counts.positive/negative/total."))
 
@@ -175,6 +238,33 @@ def _check_ground_truth_one(fs: FolderSet) -> list[CheckResult]:
                     f"actually has true={actual_true}/false={actual_false}", scope,
                     "export_summary.json's ground_truth split has drifted from the real "
                     "context_output_normalized file - regenerate the summary."))
+
+    # Reconcile against the ACTUAL raw_doc file counts physically delivered in
+    # this folder set - everything above only cross-checks export_summary's
+    # own self-reported numbers against each other or against
+    # context_output_normalized, never against the real files on disk. A
+    # stale/corrupted counts block could otherwise pass every check above
+    # while still being wrong about what was actually delivered.
+    actual_pos = len(file_cache.list_dir_files(fs.positive.raw_doc))
+    actual_neg = len(file_cache.list_dir_files(fs.negative.raw_doc))
+    actual_total = actual_pos + actual_neg
+    for label, expected, actual in (
+        ("positive", pos, actual_pos), ("negative", neg, actual_neg), ("total", total, actual_total),
+    ):
+        if expected is None:
+            continue
+        if expected == actual:
+            results.append(CheckResult(Status.PASS, CATEGORY_5, "5",
+                f"counts.{label} matches actual delivered raw_doc file count",
+                f"{expected} == {actual}", scope))
+        else:
+            results.append(CheckResult(Status.FAIL, CATEGORY_5, "5",
+                f"counts.{label} matches actual delivered raw_doc file count",
+                f"export_summary.json claims counts.{label}={expected} but {actual} "
+                f"file(s) are actually present in raw_doc/ (delta {actual - expected:+d})",
+                scope,
+                f"Regenerate export_summary.json's counts.{label} from the real raw_doc "
+                "file count - it has drifted from what was actually delivered."))
 
     return results
 

@@ -77,7 +77,17 @@ class FolderSet:
 
     @property
     def context_output_normalized_dir(self) -> Path:
-        return self.root / "context_output_normalized"
+        """"context_output_normalized" is this pipeline's real, confirmed
+        spelling - every sampled real export uses it. The British
+        "context_output_normalised" alias has never been observed here, but
+        is recognized as a fallback (only when the primary name is absent)
+        since it costs nothing and some other tool/convention could plausibly
+        use it."""
+        primary = self.root / "context_output_normalized"
+        if primary.exists():
+            return primary
+        alias = self.root / "context_output_normalised"
+        return alias if alias.exists() else primary
 
     @property
     def positive(self) -> PolarityOutputs:
@@ -99,6 +109,17 @@ class FolderSet:
         if not self.sitgrader_dir.exists():
             return []
         return sorted(p for p in self.sitgrader_dir.glob("chunk_run_*") if p.is_dir())
+
+    def legacy_benchmark_run_dirs(self) -> list[Path]:
+        """"run_benchmark_*" - an older SITGrader naming convention, found in
+        at least one real pre-rework backup tree alongside today's
+        "chunk_run_*". This tool doesn't know that old format's internal
+        schema (chunk_summary.json etc. is specific to the current
+        convention), so these are only ever noted as present, never
+        content-validated the way chunk_run_* is by sitgrader_checks.py."""
+        if not self.sitgrader_dir.exists():
+            return []
+        return sorted(p for p in self.sitgrader_dir.glob("run_benchmark_*") if p.is_dir())
 
     def context_output_normalized_files(self) -> list[Path]:
         d = self.context_output_normalized_dir

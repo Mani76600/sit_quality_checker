@@ -38,5 +38,16 @@ def list_dir_files(path: Path) -> list[Path]:
     return result
 
 
+def list_dir_dirs(path: Path) -> list[Path]:
+    """Cached, sorted list of direct child directories (no files). Missing dir -> []."""
+    key = (str(path), "__dirs__")
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+    result = sorted(p for p in path.iterdir() if p.is_dir()) if path.exists() else []
+    _cache[key] = result
+    return result
+
+
 def clear() -> None:
     _cache.clear()
