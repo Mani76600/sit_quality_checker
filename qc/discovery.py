@@ -87,24 +87,22 @@ class _Classification:
 
 
 def _classify(version_dir: Path, is_direct: bool) -> _Classification:
+    """Always inspect the real on-disk parent/grandparent directories to
+    resolve sit_name/language/layout, whether or not the user's given path
+    happened to be the Version_* dir itself: those ancestor folders exist on
+    disk either way, "is_direct" only describes which path string the user
+    typed, not what's actually above it. (Fixed from an earlier version that
+    hardcoded language=None/layout="unknown" whenever is_direct was True,
+    losing real language info any time a user pointed straight at a
+    Version_* folder instead of its SIT-name parent - confirmed to silently
+    misclassify the exact same physical run differently depending solely on
+    which of two equivalent paths was given.) is_direct only changes the
+    wording of the discovery_note shown to the user.
+    """
     parent = version_dir.parent
     grandparent = parent.parent
     content_sit_name = _read_content_sit_name(version_dir)
-
-    if is_direct:
-        # The user's given path IS the Version_* dir - there is no SIT-name
-        # folder above it to read at all.
-        if content_sit_name:
-            return _Classification(
-                content_sit_name, None, "unknown", "export_summary.json / metadata",
-                "You gave the Version_* folder directly (no SIT-name folder above it). "
-                f"SIT name '{content_sit_name}' was read from this run's own report, "
-                "not guessed from a folder name.")
-        return _Classification(
-            parent.name, None, "unknown", "folder name (unconfirmed)",
-            "You gave the Version_* folder directly, and export_summary.json / metadata "
-            f"could not be read to confirm a SIT name - using the parent folder name "
-            f"('{parent.name}') as a best-effort guess.")
+    direct_prefix = "You gave the Version_* folder directly. " if is_direct else ""
 
     parent_norm = _normalize_name(parent.name)
     grandparent_norm = _normalize_name(grandparent.name) if grandparent.name else ""
@@ -114,12 +112,20 @@ def _classify(version_dir: Path, is_direct: bool) -> _Classification:
         # Multilingual: grandparent is the real SIT folder, parent is the language
         # (e.g. "Taiwan Passport Number/Romanized Chinese/Version_*/" - confirmed
         # by content, not by parent.name being in a hardcoded language list).
-        return _Classification(grandparent.name, parent.name, "multilingual",
-                                "export_summary.json (confirmed against SIT-name folder)")
+        return _Classification(
+            grandparent.name, parent.name, "multilingual",
+            "export_summary.json (confirmed against SIT-name folder)",
+            direct_prefix + (
+                f"SIT name '{grandparent.name}' and language '{parent.name}' were confirmed "
+                "from this run's own report." if is_direct else ""))
 
     if content_sit_name and content_norm == parent_norm:
-        return _Classification(parent.name, None, "english",
-                                "export_summary.json (confirmed against folder name)")
+        return _Classification(
+            parent.name, None, "english",
+            "export_summary.json (confirmed against folder name)",
+            direct_prefix + (
+                f"SIT name '{parent.name}' was confirmed from this run's own report."
+                if is_direct else ""))
 
     if parent.name.strip().lower() in KNOWN_LANGUAGES and grandparent.name:
         # Content didn't match either ancestor name, but the folder-name
@@ -128,20 +134,25 @@ def _classify(version_dir: Path, is_direct: bool) -> _Classification:
         sit_name = content_sit_name or grandparent.name
         source = ("export_summary.json (folder language name recognized)" if content_sit_name
                   else "folder name (known-language heuristic)")
-        return _Classification(sit_name, parent.name, "multilingual", source)
+        return _Classification(sit_name, parent.name, "multilingual", source, direct_prefix)
 
     if content_sit_name:
-        return _Classification(
-            content_sit_name, None, "english",
-            "export_summary.json (folder name did not match)",
+        note = direct_prefix + (
+            f"SIT name '{content_sit_name}' was read from this run's own report, not guessed "
+            "from a folder name." if is_direct else
             f"Note: this run's own sit_name ('{content_sit_name}') does not match the "
             f"containing folder name ('{parent.name}') - double-check this output is in "
             "its expected location.")
+        return _Classification(
+            content_sit_name, None, "english",
+            "export_summary.json" + (" / metadata" if is_direct else " (folder name did not match)"),
+            note)
 
     return _Classification(
-        parent.name, None, "english", "folder name (unconfirmed)",
-        "Could not read a sit_name from export_summary.json or metadata to confirm this "
-        "folder name.")
+        parent.name, None, "unknown" if is_direct else "english", "folder name (unconfirmed)",
+        direct_prefix + "Could not read a sit_name from export_summary.json or metadata to "
+        f"confirm {'the parent' if is_direct else 'this'} folder name "
+        f"('{parent.name}') - using it as a best-effort guess.")
 
 
 def find_version_dirs(root: str | Path, report: Reporter = null_reporter) -> list[tuple[Path, bool]]:

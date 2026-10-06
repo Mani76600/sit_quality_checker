@@ -55,8 +55,32 @@ def test_classify_direct_version_dir_with_content(tmp_path):
     _write_export_summary(version_dir, "Japan Passport Number")
 
     c = _classify(version_dir, is_direct=True)
+    # Fixed bug: layout/language must be resolved from the real parent
+    # directory regardless of is_direct - pointing straight at this same
+    # Version_* dir must classify identically to discovering it by walking
+    # "some_random_export_folder" (is_direct=False), not silently lose the
+    # language/layout info just because of which path string was given.
     assert c.sit_name == "Japan Passport Number"
-    assert c.layout == "unknown"
+    assert c.language is None
+    assert c.layout == "english"
+    assert "directly" in c.note.lower()
+
+
+def test_classify_direct_version_dir_multilingual_with_content(tmp_path):
+    """The exact real-world case the bug produced wrong results for: pointing
+    straight at .../<SIT>/<Language>/Version_*/ must still resolve language
+    and layout correctly, matching what discovering the same run via its
+    SIT-name parent (is_direct=False) would produce."""
+    version_dir = (
+        tmp_path / "Taiwan Passport Number" / "Romanized Chinese" / "Version_20260911_1945"
+    )
+    version_dir.mkdir(parents=True)
+    _write_export_summary(version_dir, "Taiwan Passport Number")
+
+    c = _classify(version_dir, is_direct=True)
+    assert c.sit_name == "Taiwan Passport Number"
+    assert c.language == "Romanized Chinese"
+    assert c.layout == "multilingual"
     assert "directly" in c.note.lower()
 
 
