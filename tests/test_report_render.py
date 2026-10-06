@@ -77,3 +77,53 @@ def test_render_pdf_shows_detail_for_passed_checks_and_strips_numbers():
     assert "Healthcare=5, Finance=3" in text
     assert "3. context_output_normalized" not in text
     assert "5. export_summary.json ground truth" not in text
+
+
+def _report_with_huge_detail() -> RunReport:
+    """A real downloaded report had a "Content Verification" check whose
+    detail joined several full document excerpts together (" || "-separated,
+    several KB total) - unreadable dumped whole into an HTML table cell or a
+    PDF paragraph."""
+    report = RunReport(label="Test SIT / Version_20260101_0000", version_dir="C:\\out\\Version_20260101_0000")
+    huge = " || ".join(f"[doc_{i}.txt] some real document excerpt text here " * 20 for i in range(10))
+    report.add(CheckResult(
+        Status.PASS, "9b. Content Verification (value-in-context)", "9b",
+        "Example value-in-context extractions", huge, "Agreements",
+    ))
+    return report
+
+
+def test_render_html_truncates_pathologically_long_detail():
+    html_out = render_html(_report_with_huge_detail())
+    assert "truncated" in html_out
+    # The full several-KB blob must not appear verbatim.
+    assert " || ".join(["x"] * 10) not in html_out  # sanity: separator alone isn't the whole thing
+    huge_detail = _report_with_huge_detail().results[0].detail
+    assert huge_detail not in html_out
+
+
+def test_render_pdf_truncates_pathologically_long_detail():
+    import io
+
+    from pypdf import PdfReader
+
+    pdf_bytes = render_pdf(_report_with_huge_detail())
+    text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf_bytes)).pages)
+    assert "truncated" in text
+    huge_detail = _report_with_huge_detail().results[0].detail
+    assert huge_detail not in text
+
+
+def test_render_html_wraps_every_result_in_a_collapsed_details_row():
+    """Every single result - PASS or FAIL alike - is a compact table row by
+    default (a short one-line summary), with the full detail/examples/fix
+    tucked behind a native <details> inside that same row's cell. A large
+    corpus can produce hundreds of results, so the page must open on short,
+    scannable rows, not a wall of always-expanded text, while still making
+    the full detail reachable with one click - for a FAIL exactly as much
+    as for a PASS, since both need to stay readable at scale."""
+    html_out = render_html(_sample_report())
+    assert "result-table" in html_out
+    assert "row-expand" in html_out
+    # One result each (PASS + FAIL) -> one details-wrapped row each.
+    assert html_out.count('<details class="row-expand">') == 2

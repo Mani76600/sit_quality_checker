@@ -16,6 +16,8 @@ from typing import Callable
 
 from qc import file_cache
 from qc import jsonio
+from qc import lang_names
+from qc import stats as qc_stats
 from qc.context import VersionContext
 from qc.models import CheckResult, RunReport, Status
 from qc.progress import Reporter, null_reporter
@@ -60,6 +62,28 @@ def _resolved_total(counts: dict) -> int | None:
     return total
 
 
+def _read_generation_info(ctx: VersionContext) -> dict:
+    """Model/tool versions this run was generated with, read once from
+    generation_log.json (schema confirmed in generation_log_checks.py) for
+    display at the top of the report - purely informational, independent of
+    that module's own PASS/FAIL schema validation of the same file."""
+    data, err = jsonio.read_json_cached(ctx.version_dir / "generation_log.json")
+    if err or not isinstance(data, dict):
+        return {}
+    generator = data.get("generator") if isinstance(data.get("generator"), dict) else {}
+    sit_grader = data.get("sit_grader") if isinstance(data.get("sit_grader"), dict) else {}
+    mce = data.get("mce") if isinstance(data.get("mce"), dict) else {}
+    docparser = data.get("docparser") if isinstance(data.get("docparser"), dict) else {}
+    return {
+        "generator_model": generator.get("model"),
+        "generator_model_version": generator.get("model_version"),
+        "sit_grader_model": sit_grader.get("model"),
+        "mce_version": mce.get("version"),
+        "docparser_version": docparser.get("version"),
+        "generated_at": data.get("generated_at"),
+    }
+
+
 def _read_doc_counts(ctx: VersionContext) -> dict:
     """Small summary (total / Agreements pos-neg / Disagreements pos-neg)
     read once per run from each folder set's export_summary.json, shown as
@@ -100,7 +124,22 @@ def run_all(ctx: VersionContext, options: dict | None = None,
     clear_scan_cache()
     from qc.checks.inverted_index_scan import clear_scan_cache as clear_inverted_index_cache
     clear_inverted_index_cache()
-    report = RunReport(label=ctx.label, version_dir=str(ctx.version_dir), doc_counts=_read_doc_counts(ctx))
+    report_progress(f"Computing MCE detection coverage + label distribution for: {ctx.label} ...")
+    run_stats = {
+        "mce_coverage": qc_stats.compute_mce_coverage(ctx),
+        "label_distribution": qc_stats.compute_label_distribution(ctx),
+        "composition": qc_stats.compute_composition_distributions(ctx),
+        "document_length": qc_stats.compute_document_length_distribution(ctx),
+    }
+    generation_info = _read_generation_info(ctx)
+    language = qc_stats.compute_dominant_language(ctx)
+    if language.get("code"):
+        generation_info["language_code"] = language["code"]
+        generation_info["language_name"] = lang_names.full_name(language["code"])
+    report = RunReport(label=ctx.label, version_dir=str(ctx.version_dir),
+                        doc_counts=_read_doc_counts(ctx), stats=run_stats,
+                        discovery_note=ctx.discovery_note,
+                        generation_info=generation_info)
     report_progress(f"Starting checks for: {ctx.label} ({len(_CHECKS)} check functions registered)")
     for i, (category, fn) in enumerate(_CHECKS, start=1):
         report_progress(f"[{i}/{len(_CHECKS)}] Running {fn.__module__}.{fn.__name__} ({category}) ...")

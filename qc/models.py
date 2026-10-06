@@ -54,6 +54,9 @@ class RunReport:
     version_dir: str
     results: list[CheckResult] = field(default_factory=list)
     doc_counts: dict = field(default_factory=dict)  # see qc.registry.run_all's population of this
+    stats: dict = field(default_factory=dict)  # see qc.stats / qc.registry.run_all
+    discovery_note: str = ""  # copied from VersionContext.discovery_note, shown as a caveat in the UI
+    generation_info: dict = field(default_factory=dict)  # model/tool versions, from generation_log.json
 
     def add(self, results: list[CheckResult] | CheckResult) -> None:
         if isinstance(results, CheckResult):
@@ -80,6 +83,9 @@ class RunReport:
             "version_dir": self.version_dir,
             "counts": self.counts(),
             "doc_counts": self.doc_counts,
+            "stats": self.stats,
+            "discovery_note": self.discovery_note,
+            "generation_info": self.generation_info,
             "results": [r.to_dict() for r in self.results],
         }
 

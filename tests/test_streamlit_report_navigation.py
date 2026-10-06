@@ -160,19 +160,21 @@ def test_top_metrics_row_has_only_fail_and_pass_with_info_folded_in():
     assert metrics["✅ PASS"] == "1"  # 1 literal PASS + 0 INFO in this fixture
 
 
-def test_info_results_land_in_passed_table_not_actionable_callouts(monkeypatch):
+def test_info_results_render_as_a_plain_row_not_specially_flagged(monkeypatch):
+    """Every result - FAIL/WARN/PASS/INFO alike - now renders as one
+    compact table row by default (a colored status badge + title + short
+    summary), with the full detail/examples/fix behind a native <details>
+    in that same row - not split into an "actionable callout" vs "passed
+    dataframe". An INFO result's title legitimately appears in the page's
+    markdown now. What must still hold: its own status badge says INFO,
+    not FAIL/WARN - it's never shown as more urgent than it is."""
     monkeypatch.setenv("FIXTURE_DOC_COUNTS", "1")
     at = AppTest.from_file(str(FIXTURE), default_timeout=30)
     at.run()
     assert not at.exception
     html = _all_markdown_html(at)
-    # An INFO result's title must not appear as a flagged callout (which
-    # would bold it with its own status icon + a "Suggested fix" box) -
-    # it should only show up inside the condensed passed-checks dataframe.
-    assert "**ℹ️" not in html
-    assert "Just a note" not in html  # only in the dataframe, not markdown text
-    dataframes = [d.value for d in at.dataframe]
-    assert any("Just a note" in df.to_string() for df in dataframes)
+    assert "Just a note" in html
+    assert ">INFO<" in html
 
 
 def test_doc_counts_highlight_renders_when_present(monkeypatch):
