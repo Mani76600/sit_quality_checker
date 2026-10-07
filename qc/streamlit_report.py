@@ -16,7 +16,9 @@ import streamlit as st
 from qc.check_groups import ADDITIONAL_CHECK_CATEGORIES, ADDITIONAL_CHECKS_SECTION_TITLE
 from qc.detail_format import split_detail
 from qc.models import RunReport, Status
-from qc.report_render import _truncate, render_html, render_pdf
+from qc.report_render import (
+    _gated_critical_metrics, _quality_metrics_section_html, _truncate, render_html, render_pdf,
+)
 
 def _inject_metric_css() -> None:
     """Streamlit's default st.metric value font (~2.25rem, no wrapping) cuts
@@ -30,20 +32,34 @@ def _inject_metric_css() -> None:
         '[data-testid="stMetricValue"] { font-size: 1.3rem; white-space: normal; '
         "overflow-wrap: break-word; line-height: 1.3; }"
         '[data-testid="stMetricLabel"] { font-size: 0.85rem; }'
-        ".qc-result-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }"
+        ".qc-result-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; "
+        "table-layout: auto; line-height: 1.25; }"
         ".qc-result-table th, .qc-result-table td { border: 1px solid rgba(128,128,128,0.25); "
-        "padding: 0.35rem 0.55rem; text-align: left; vertical-align: top; }"
+        "padding: 0.18rem 0.5rem; text-align: left; vertical-align: top; }"
         ".qc-result-table td:nth-child(1) { width: 60px; }"
         ".qc-result-table td:nth-child(2) { width: 24%; }"
         ".qc-row-badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; "
         "color: white; font-size: 0.68rem; font-weight: 700; white-space: nowrap; }"
-        ".qc-row-scope { opacity: 0.7; font-size: 0.72rem; margin-top: 2px; }"
+        ".qc-row-scope { opacity: 0.7; font-size: 0.72rem; }"
         "details.qc-row-expand summary { cursor: pointer; list-style: none; }"
         "details.qc-row-expand summary::-webkit-details-marker { display: none; }"
         'details.qc-row-expand summary::before { content: "\\25B8  "; opacity: 0.6; }'
         'details.qc-row-expand[open] summary::before { content: "\\25BE  "; }'
         ".qc-row-fix { color: #2d5a8b; font-size: 0.78rem; margin-top: 0.3rem; }"
         ".qc-row-examples { margin: 0.25rem 0 0.15rem 0; padding-left: 1.1rem; font-size: 0.78rem; }"
+        # Quality Metrics section (see report_render.py's _quality_metrics_section_html,
+        # reused as-is here) - same class names, defined once per render.
+        ".qm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); "
+        "gap: 12px; margin: 0.6rem 0 1.3rem; }"
+        ".qm-row { background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25); "
+        "border-radius: 8px; padding: 10px 14px; }"
+        ".qm-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }"
+        f".qm-label {{ font-weight: 700; color: {ACCENT}; font-size: 0.85rem; }}"
+        ".qm-badge { color: white; font-size: 0.62rem; font-weight: 700; padding: 1px 7px; "
+        "border-radius: 4px; letter-spacing: 0.03em; white-space: nowrap; }"
+        f".qm-score {{ margin-left: auto; font-weight: 700; font-size: 0.9rem; color: {ACCENT}; }}"
+        ".qm-detail { font-size: 0.76rem; opacity: 0.75; margin-top: 2px; }"
+        ".qm-sample { opacity: 0.8; }"
         "</style>",
         unsafe_allow_html=True,
     )
@@ -52,10 +68,12 @@ def _inject_metric_css() -> None:
 def _result_table_html(results) -> str:
     """One <table> per category, every result (PASS or FAIL alike) a single
     compact row by default with the full detail/examples/fix behind a
-    native <details> in the same cell - the Streamlit-rendered twin of
-    report_render.py's own _result_row_html, kept as plain HTML (not one
-    Streamlit widget per row) purely for render speed at real-report scale
-    (see the call site's comment)."""
+    native <details> in the same cell ONLY when there's genuinely something
+    beyond the summary (truncated lead text, examples, or a fix) - the
+    Streamlit-rendered twin of report_render.py's own _result_row_html
+    (same no-dead-expand-arrow rule), kept as plain HTML (not one Streamlit
+    widget per row) purely for render speed at real-report scale (see the
+    call site's comment)."""
     import html as _html
 
     color = {Status.FAIL.value: RED, Status.WARN.value: "#9a6700", Status.PASS.value: GREEN,
@@ -63,22 +81,126 @@ def _result_table_html(results) -> str:
     rows = []
     for r in results:
         lead, examples = split_detail(r.detail)
-        short = _html.escape(_truncate(lead, 90))
-        body = f"<div>{_html.escape(_truncate(lead))}</div>"
+        short = _truncate(lead, 90)
+        lead_truncated = short != lead
+        short_html = _html.escape(short)
+        body_parts = []
+        if lead_truncated:
+            body_parts.append(f"<div>{_html.escape(_truncate(lead))}</div>")
         if examples:
-            body += '<ul class="qc-row-examples">' + "".join(
-                f"<li>{_html.escape(_truncate(item))}</li>" for item in examples) + "</ul>"
+            body_parts.append('<ul class="qc-row-examples">' + "".join(
+                f"<li>{_html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
         if r.fix:
-            body += f'<div class="qc-row-fix">Suggested fix: {_html.escape(r.fix)}</div>'
-        scope_html = f'<div class="qc-row-scope">{_html.escape(r.scope)}</div>' if r.scope else ""
+            body_parts.append(f'<div class="qc-row-fix">Suggested fix: {_html.escape(r.fix)}</div>')
+        scope_html = f' <span class="qc-row-scope">({_html.escape(r.scope)})</span>' if r.scope else ""
+        if body_parts:
+            result_html = f'<details class="qc-row-expand"><summary>{short_html}</summary>{"".join(body_parts)}</details>'
+        else:
+            result_html = short_html
         rows.append(
             f'<tr><td><span class="qc-row-badge" style="background:{color.get(r.status.value, GREEN)}">'
             f'{r.status.value}</span></td>'
             f"<td>{_html.escape(r.title)}{scope_html}</td>"
-            f'<td><details class="qc-row-expand"><summary>{short}</summary>{body}</details></td></tr>'
+            f"<td>{result_html}</td></tr>"
         )
     return ('<table class="qc-result-table"><tr><th>Status</th><th>Check</th><th>Result</th></tr>'
             + "".join(rows) + "</table>")
+
+
+def _corpus_breakdown_html(cb: dict) -> str:
+    """Easy/Hard x Positive/Negative: Accepted vs Generated vs Disagreed vs
+    Rate per bucket - the same data report_render.py's _corpus_breakdown_stat_html
+    shows, built here as plain HTML for the Streamlit page."""
+    if not cb or not cb.get("total_generated"):
+        return ""
+    label_names = {
+        "easy positive": "Easy positive", "hard positive": "Hard positive",
+        "easy negative": "Easy negative", "hard negative": "Hard negative",
+    }
+    rows = "".join(
+        f'<tr><td style="padding:3px 6px">{label_names.get(b["label"], b["label"])}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{b["accepted"]:,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{b["generated"]:,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{b["disagreed"]:,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{b["rate"]:.1f}%</td></tr>'
+        for b in cb.get("buckets", [])
+    )
+    border = 'border-bottom:1px solid rgba(128,128,128,0.4)'
+    return (
+        '<table style="width:100%;border-collapse:collapse;font-size:0.82rem;">'
+        f'<thead><tr><th style="text-align:left;padding:3px 6px;{border}"></th>'
+        f'<th style="text-align:right;padding:3px 6px;{border}">Accepted</th>'
+        f'<th style="text-align:right;padding:3px 6px;{border}">Generated</th>'
+        f'<th style="text-align:right;padding:3px 6px;{border}">Disagreed</th>'
+        f'<th style="text-align:right;padding:3px 6px;{border}">Rate</th></tr></thead>'
+        f"<tbody>{rows}"
+        '<tr style="font-weight:700;border-top:1px solid rgba(128,128,128,0.4)">'
+        '<td style="padding:3px 6px">Total</td>'
+        f'<td style="text-align:right;padding:3px 6px">{cb.get("total_accepted", 0):,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{cb.get("total_generated", 0):,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{cb.get("total_disagreed", 0):,}</td>'
+        f'<td style="text-align:right;padding:3px 6px">{cb.get("total_rate", 0):.1f}%</td></tr>'
+        "</tbody></table>"
+    )
+
+
+def _fix_list_html(grouped: dict, categories: list[str]) -> str:
+    """A single prioritized punch-list of every FAIL across the given
+    categories, meant to sit right under the FAIL/PASS metrics so what's
+    broken is visible in one place instead of only discoverable by opening
+    each category's own table - the Streamlit-rendered twin of
+    report_render.py's own _fix_list_html."""
+    import html as _html
+    fails = [(category, r) for category in categories for r in grouped[category]
+             if r.status == Status.FAIL]
+    if not fails:
+        return ""
+    rows = []
+    for category, r in fails:
+        lead, _examples = split_detail(r.detail)
+        scope_bit = f' <span style="opacity:0.7">({_html.escape(r.scope)})</span>' if r.scope else ""
+        do_bit = _html.escape(_truncate(r.fix, 140)) if r.fix else ""
+        rows.append(
+            '<div style="display:grid;grid-template-columns:110px minmax(0,1.6fr) minmax(0,1fr);'
+            'gap:10px;padding:4px 0;border-top:1px solid rgba(128,128,128,0.25);font-size:0.78rem;'
+            'align-items:baseline;">'
+            '<span style="opacity:0.65;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.03em;">'
+            f'{_html.escape(_display_category(category))}</span>'
+            f'<span>{_html.escape(r.title)}{scope_bit} &mdash; {_html.escape(_truncate(lead, 140))}</span>'
+            f'<span style="color:{ACCENT}">{do_bit}</span>'
+            "</div>"
+        )
+    return (
+        f'<div style="font-weight:700;color:{ACCENT};font-size:0.95rem;margin-bottom:4px;">'
+        f"Fix these {len(fails)}</div>"
+        '<div style="max-height:260px;overflow-y:auto;">' + "".join(rows) + "</div>"
+    )
+
+
+def _gates_dot_grid_html(grouped: dict, categories: list[str]) -> str:
+    """Compact strip of colored dots, one per checklist category group
+    (green = all passed, red = at least one FAIL) - a faster visual scan
+    than reading every row of the glance table below it."""
+    if not categories:
+        return ""
+    import html as _html
+
+    def _cat_fail(category: str) -> int:
+        return sum(1 for r in grouped[category] if r.status == Status.FAIL)
+
+    n_fail_groups = sum(1 for c in categories if _cat_fail(c))
+    dots = "".join(
+        '<span style="width:11px;height:11px;border-radius:3px;display:inline-block;'
+        f'background:{RED if _cat_fail(c) else GREEN}" '
+        f'title="{_html.escape(_display_category(c))}: {"FAIL" if _cat_fail(c) else "PASS"}"></span>'
+        for c in categories
+    )
+    return (
+        '<div style="display:flex;align-items:center;gap:10px;margin:0 0 0.6rem;flex-wrap:wrap;">'
+        f'<span style="font-size:0.78rem;opacity:0.7;white-space:nowrap;">'
+        f"{len(categories) - n_fail_groups}/{len(categories)} check group(s) passing</span>"
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px;">{dots}</div></div>'
+    )
 
 
 STATUS_ICON = {
@@ -335,6 +457,16 @@ def render_report(report: RunReport) -> None:
                 unknown = dist.get("unknown", 0)
                 st.caption(f"total: {dist.get('total', 0)}" + (f"  ·  unknown: {unknown}" if unknown else ""))
 
+    cb = stats.get("corpus_breakdown") or {}
+    if cb.get("total_generated"):
+        st.markdown("**Corpus Breakdown**")
+        st.caption("Accepted vs Generated vs Disagreed, per difficulty/polarity bucket")
+        st.markdown(_corpus_breakdown_html(cb), unsafe_allow_html=True)
+
+    quality_metrics_html = _quality_metrics_section_html(report.quality_metrics)
+    if quality_metrics_html:
+        st.markdown(quality_metrics_html, unsafe_allow_html=True)
+
     composition = stats.get("composition") or {}
     if composition:
         with st.expander("📊 Document composition - most common counts", expanded=False):
@@ -397,13 +529,17 @@ def render_report(report: RunReport) -> None:
                       for category in ordered_categories}
 
     n_fail, n_warn = counts.get("FAIL", 0), counts.get("WARN", 0)
-    if n_fail:
-        st.error(f"❌ {n_fail} check(s) failed — needs fixes before this output ships. "
+    gated_critical = _gated_critical_metrics(report.quality_metrics)
+    if n_fail or gated_critical:
+        extra = (f" plus {len(gated_critical)} quality metric(s) below gate threshold "
+                 f"({', '.join(gated_critical)})") if gated_critical else ""
+        st.error(f"❌ {n_fail} check(s) failed{extra} — needs fixes before this output ships. "
                  f"See the checklist below for exactly which ones.")
         failed_cats = [c for c in ordered_categories if cat_effective[c][0] == Status.FAIL.value]
         links = " &nbsp;·&nbsp; ".join(
             f'<a href="#{cat_anchor[c]}">❌ {_display_category(c)}</a>' for c in failed_cats)
-        st.markdown(f"**Jump to failed check(s):** {links}", unsafe_allow_html=True)
+        if links:
+            st.markdown(f"**Jump to failed check(s):** {links}", unsafe_allow_html=True)
     elif n_warn:
         st.warning(f"⚠️ All mandatory checks passed, but {n_warn} item(s) need a human look "
                    f"(warnings) — see below.")
@@ -418,6 +554,14 @@ def render_report(report: RunReport) -> None:
     cols[0].metric(f"{STATUS_ICON[Status.FAIL.value]} FAIL", n_fail)
     cols[1].metric(f"{STATUS_ICON[Status.PASS.value]} PASS",
                     counts.get("PASS", 0) + counts.get("INFO", 0))
+
+    all_categories = core_categories + additional_categories
+    fix_list_html = _fix_list_html(grouped, all_categories)
+    if fix_list_html:
+        st.markdown(fix_list_html, unsafe_allow_html=True)
+    gates_html = _gates_dot_grid_html(grouped, all_categories)
+    if gates_html:
+        st.markdown(gates_html, unsafe_allow_html=True)
 
     def _glance_table_html(categories: list[str]) -> str:
         table_rows = []

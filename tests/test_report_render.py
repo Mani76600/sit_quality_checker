@@ -115,15 +115,23 @@ def test_render_pdf_truncates_pathologically_long_detail():
 
 
 def test_render_html_wraps_every_result_in_a_collapsed_details_row():
-    """Every single result - PASS or FAIL alike - is a compact table row by
-    default (a short one-line summary), with the full detail/examples/fix
-    tucked behind a native <details> inside that same row's cell. A large
-    corpus can produce hundreds of results, so the page must open on short,
-    scannable rows, not a wall of always-expanded text, while still making
-    the full detail reachable with one click - for a FAIL exactly as much
-    as for a PASS, since both need to stay readable at scale."""
+    """Every result - PASS or FAIL alike - is a compact table row by
+    default (a short one-line summary). The full detail/examples/fix is
+    tucked behind a native <details> in that same row's cell ONLY when
+    there's genuinely something beyond the summary to reveal (the lead text
+    was truncated, or there are examples/a suggested fix) - a row whose
+    short summary already says everything (like the PASS fixture here, a
+    short detail with no fix) must NOT get a dead expand arrow that just
+    repeats the same sentence again. A large corpus can produce hundreds of
+    results, so the page must open on short, scannable rows, with the full
+    detail reachable with one click wherever there actually is more to see."""
     html_out = render_html(_sample_report())
     assert "result-table" in html_out
     assert "row-expand" in html_out
-    # One result each (PASS + FAIL) -> one details-wrapped row each.
-    assert html_out.count('<details class="row-expand">') == 2
+    # PASS row's detail is short and has no fix -> no expand wrapper (would
+    # just repeat "domain distribution"/"Healthcare=5, Finance=3..." again).
+    assert "domain distribution" in html_out
+    assert "Healthcare=5, Finance=3" in html_out
+    # FAIL row has a suggested fix beyond its short summary -> gets wrapped.
+    assert html_out.count('<details class="row-expand">') == 1
+    assert "Reconcile the counts." in html_out

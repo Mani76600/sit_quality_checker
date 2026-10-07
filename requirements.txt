@@ -5,3 +5,5 @@ fpdf2>=2.7
 py7zr>=0.20
 ijson>=3.2
 pypdf>=4.0  # test-only: extracting real text from render_pdf()'s output to verify it
+datasketch>=1.6  # MinHash/LSH for the Template Cluster Rate quality metric
+langdetect>=1.0  # span-level language detection for the Target-Language Purity quality metric

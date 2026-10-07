@@ -68,6 +68,44 @@ def compute_label_distribution(ctx: VersionContext) -> dict:
     }
 
 
+def compute_corpus_breakdown(ctx: VersionContext) -> dict:
+    """Same easy/hard x positive/negative buckets as compute_label_distribution,
+    but split by folder set instead of summed - so "how many were generated"
+    (Agreements + Disagreements) never hides "how many were actually
+    accepted" (Agreements alone) and "how many disagreed" (Disagreements
+    alone) behind a single combined number. Powers the Corpus Breakdown
+    table (Accepted / Generated / Disagreed / Rate per bucket)."""
+    def _bucket_counts(fs: FolderSet) -> Counter:
+        counts: Counter[str] = Counter()
+        records, _errors = read_jsonl_cached(fs.combined_metadata)
+        for rec in records:
+            counts[sit_category(rec)] += 1
+        return counts
+
+    accepted_counts = _bucket_counts(ctx.agreements)
+    disagreed_counts = _bucket_counts(ctx.disagreements)
+    buckets = []
+    total_accepted = total_disagreed = total_generated = 0
+    for label in _LABEL_BUCKETS:
+        accepted = accepted_counts.get(label, 0)
+        disagreed = disagreed_counts.get(label, 0)
+        generated = accepted + disagreed
+        rate = (accepted / generated * 100) if generated else 0.0
+        buckets.append({"label": label, "accepted": accepted, "disagreed": disagreed,
+                         "generated": generated, "rate": rate})
+        total_accepted += accepted
+        total_disagreed += disagreed
+        total_generated += generated
+    total_rate = (total_accepted / total_generated * 100) if total_generated else 0.0
+    return {
+        "buckets": buckets,
+        "total_accepted": total_accepted,
+        "total_disagreed": total_disagreed,
+        "total_generated": total_generated,
+        "total_rate": total_rate,
+    }
+
+
 def _extract_snippets(obj, found: list | None = None) -> list[dict]:
     if found is None:
         found = []

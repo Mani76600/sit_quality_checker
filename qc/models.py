@@ -57,6 +57,7 @@ class RunReport:
     stats: dict = field(default_factory=dict)  # see qc.stats / qc.registry.run_all
     discovery_note: str = ""  # copied from VersionContext.discovery_note, shown as a caveat in the UI
     generation_info: dict = field(default_factory=dict)  # model/tool versions, from generation_log.json
+    quality_metrics: dict = field(default_factory=dict)  # see qc.quality_metrics / qc.registry.run_all
 
     def add(self, results: list[CheckResult] | CheckResult) -> None:
         if isinstance(results, CheckResult):
@@ -86,6 +87,7 @@ class RunReport:
             "stats": self.stats,
             "discovery_note": self.discovery_note,
             "generation_info": self.generation_info,
+            "quality_metrics": self.quality_metrics,
             "results": [r.to_dict() for r in self.results],
         }
 

@@ -99,6 +99,18 @@ def _glance_result_text(n_fail_cat: int) -> str:
     return "All checks passed" if not n_fail_cat else f"{n_fail_cat} check(s) failed"
 
 
+def _gated_critical_metrics(quality_metrics: dict) -> list[str]:
+    """Quality metrics (see qc.quality_metrics) are a different kind of
+    result from the PASS/FAIL checklist - graded Strong/Acceptable/Weak/
+    Critical against a threshold ladder, not binary. Only the ones marked
+    "gate" in their own definition (Position/Keyword Proximity/Negative
+    Label diversity - Template Cluster Rate is report-only and Language
+    Purity is advisory-only) flip the overall verdict to FAILING when they
+    land in Critical."""
+    return [m["label"] for m in (quality_metrics or {}).values()
+            if m.get("gate") and m.get("grade") == "critical"]
+
+
 # ------------------------------------------------------------ HTML charts --
 
 def _donut_svg(pct: float | None, size: int = 92, stroke: int = 12) -> str:
@@ -354,6 +366,152 @@ def _composition_section_html(composition: dict) -> str:
     )
 
 
+def _corpus_breakdown_stat_html(cb: dict) -> str:
+    if not cb or not cb.get("total_generated"):
+        return ""
+    label_names = {
+        "easy positive": "Easy positive", "hard positive": "Hard positive",
+        "easy negative": "Easy negative", "hard negative": "Hard negative",
+    }
+    rows = "".join(
+        f'<tr><td>{label_names.get(b["label"], b["label"])}</td>'
+        f'<td>{b["accepted"]:,}</td><td>{b["generated"]:,}</td>'
+        f'<td>{b["disagreed"]:,}</td><td>{b["rate"]:.1f}%</td></tr>'
+        for b in cb.get("buckets", [])
+    )
+    return f"""
+<div class="stat-card stat-card-wide">
+  <div class="stat-label">Corpus Breakdown</div>
+  <table class="corpus-table"><tr><th></th><th>Accepted</th><th>Generated</th><th>Disagreed</th><th>Rate</th></tr>
+  {rows}
+  <tr class="corpus-total"><td>Total</td><td>{cb.get("total_accepted", 0):,}</td>
+  <td>{cb.get("total_generated", 0):,}</td><td>{cb.get("total_disagreed", 0):,}</td>
+  <td>{cb.get("total_rate", 0):.1f}%</td></tr></table>
+</div>"""
+
+
+def _fix_list_html(core, additional) -> str:
+    """A single prioritized punch-list of every FAIL across the whole
+    report, shown right under the verdict banner - so everything broken is
+    visible in one place instead of only discoverable by opening each
+    category's own table one at a time. Adapted from (not copied from) the
+    reference dashboards' flat "fix these N" list, built from our own
+    check-result categories/fixes instead of a fixed external metric set."""
+    fails = [(category, r) for category, results in core + additional
+             for r in results if r.status == Status.FAIL]
+    if not fails:
+        return ""
+    rows = []
+    for category, r in fails:
+        lead, _examples = split_detail(r.detail)
+        scope_bit = f' <span class="fixlist-scope">({html.escape(r.scope)})</span>' if r.scope else ""
+        do_bit = html.escape(_truncate(r.fix, 140)) if r.fix else ""
+        rows.append(
+            '<div class="fixlist-row">'
+            f'<span class="fixlist-cat">{html.escape(_display_category(category))}</span>'
+            f'<span class="fixlist-what">{html.escape(r.title)}{scope_bit} &mdash; '
+            f'{html.escape(_truncate(lead, 140))}</span>'
+            f'<span class="fixlist-do">{do_bit}</span>'
+            "</div>"
+        )
+    return (
+        f'<div class="fixlist"><div class="fixlist-head">Fix these {len(fails)}</div>'
+        f'<div class="fixlist-body">{"".join(rows)}</div></div>'
+    )
+
+
+def _gates_dot_grid_html(core, additional) -> str:
+    """Compact strip of colored dots, one per checklist category group
+    (green = all passed, red = at least one FAIL) - a faster visual scan
+    than reading every row of the glance table below it. Adapted from (not
+    copied from) the reference dashboards' "gates" panel, using our own
+    category groups instead of a fixed metric set."""
+    groups = core + additional
+    if not groups:
+        return ""
+    n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
+    dots = "".join(
+        f'<span class="gate-dot" style="background:{RED if _fail_count(results) else GREEN}" '
+        f'title="{html.escape(_display_category(category))}: '
+        f'{"FAIL" if _fail_count(results) else "PASS"}"></span>'
+        for category, results in groups
+    )
+    return (
+        '<div class="gates-strip">'
+        f'<span class="gates-label">{len(groups) - n_fail_groups}/{len(groups)} check group(s) passing</span>'
+        f'<div class="gates-dots">{dots}</div></div>'
+    )
+
+
+_GRADE_COLORS = {
+    "strong": GREEN, "acceptable": "#2d5a8b", "weak": "#9a6700",
+    "critical": RED, "report_only": MUTED, "n/a": MUTED,
+}
+# (strong_min, acceptable_min, weak_min) per gated/graded metric - everything
+# below weak_min is "critical". Template Cluster Rate has no ladder (report
+# only, lower-is-better, no pass/fail grade per its own spec).
+_METRIC_THRESHOLDS = {
+    "target_language_purity": (0.995, 0.990, 0.970),
+    "sit_position_diversity": (0.85, 0.75, 0.60),
+    "keyword_proximity_diversity": (0.70, 0.55, 0.30),
+    "negative_label_uniqueness": (0.70, 0.55, 0.35),
+}
+_METRIC_ORDER = [
+    "template_cluster_rate", "target_language_purity", "sit_position_diversity",
+    "keyword_proximity_diversity", "negative_label_uniqueness",
+]
+
+
+def _metric_ladder_html(score: float, strong_min: float, acceptable_min: float, weak_min: float) -> str:
+    """A thin, four-zone (critical/weak/acceptable/strong) horizontal track
+    with a marker at the metric's actual score - our own visual for "where
+    does this score fall against its own thresholds", reusing the same
+    bar-track idiom already used for MCE coverage elsewhere in this report,
+    not the reference dashboards' own box-ladder."""
+    zones = [(0.0, weak_min, RED), (weak_min, acceptable_min, "#9a6700"),
+             (acceptable_min, strong_min, "#2d5a8b"), (strong_min, 1.0, GREEN)]
+    segs = "".join(
+        f'<div style="position:absolute;left:{a * 100:.1f}%;width:{(b - a) * 100:.1f}%;'
+        f'height:100%;background:{color}"></div>'
+        for a, b, color in zones if b > a
+    )
+    marker = max(0.0, min(1.0, score)) * 100
+    return (
+        '<div style="position:relative;height:7px;border-radius:4px;overflow:hidden;'
+        f'background:{BORDER};margin:5px 0 2px;">{segs}'
+        f'<div style="position:absolute;left:{marker:.1f}%;top:-3px;width:2px;height:13px;'
+        'background:#14181f;"></div></div>'
+    )
+
+
+def _quality_metrics_section_html(quality_metrics: dict) -> str:
+    if not quality_metrics:
+        return ""
+    rows = []
+    for key in _METRIC_ORDER:
+        m = quality_metrics.get(key)
+        if not m:
+            continue
+        grade = m.get("grade", "n/a")
+        color = _GRADE_COLORS.get(grade, MUTED)
+        score = m.get("score")
+        score_str = f"{score:.3f}" if score is not None else "n/a"
+        ladder = (_metric_ladder_html(score, *_METRIC_THRESHOLDS[key])
+                  if key in _METRIC_THRESHOLDS and score is not None else "")
+        gate_note = " &middot; gates the verdict" if m.get("gate") else ""
+        rows.append(f"""
+<div class="qm-row">
+  <div class="qm-head"><span class="qm-label">{html.escape(m["label"])}</span>
+  <span class="qm-badge" style="background:{color}">{grade.replace('_', ' ').upper()}</span>
+  <span class="qm-score">{score_str}</span></div>
+  {ladder}
+  <div class="qm-detail">{html.escape(m["detail"])}<span class="qm-sample"> ({html.escape(m.get("sample_note", ""))}{gate_note})</span></div>
+</div>""")
+    if not rows:
+        return ""
+    return f'<h2>Quality Metrics</h2><div class="qm-grid">{"".join(rows)}</div>'
+
+
 def _doc_counts_stat_html(dc: dict) -> str:
     if not dc:
         return ""
@@ -376,16 +534,22 @@ def _doc_counts_stat_html(dc: dict) -> str:
 def render_html(report: RunReport) -> str:
     counts = report.counts()
     n_fail = counts.get("FAIL", 0)
-    if n_fail:
-        verdict = ("FAILING", f"{n_fail} check(s) failed - needs fixes before this output ships.")
+    gated_critical = _gated_critical_metrics(report.quality_metrics)
+    if n_fail or gated_critical:
+        extra = (f" + {len(gated_critical)} quality metric(s) below gate threshold "
+                 f"({', '.join(gated_critical)})") if gated_critical else ""
+        verdict = ("FAILING", f"{n_fail} check(s) failed{extra} - needs fixes before this output ships.")
     else:
         verdict = ("CLEAN", "Every quality check passed for this run.")
+
+    core, additional = _core_and_additional(report)
 
     stat_cards = "".join([
         _doc_counts_stat_html(report.doc_counts),
         _mce_stat_html((report.stats or {}).get("mce_coverage", {})),
         _document_length_stat_html((report.stats or {}).get("document_length", {})),
         _label_distribution_stat_html((report.stats or {}).get("label_distribution", {})),
+        _corpus_breakdown_stat_html((report.stats or {}).get("corpus_breakdown", {})),
     ])
 
     parts = [f"""<!doctype html>
@@ -481,9 +645,39 @@ def render_html(report: RunReport) -> str:
   details.passed-block summary:hover {{ color: {INK}; }}
   .glance-table td:nth-child(1) {{ width: 70px; }}
   .glance-table td:nth-child(2) {{ width: 45%; }}
-  .result-table td:nth-child(1) {{ width: 64px; }}
-  .result-table td:nth-child(2) {{ width: 22%; }}
-  .row-scope {{ color: {MUTED}; font-size: 0.72rem; margin-top: 2px; }}
+  .result-table {{ table-layout: auto; line-height: 1.25; }}
+  .result-table td, .result-table th {{ padding: 0.18rem 0.5rem; }}
+  .result-table td:nth-child(1) {{ width: 64px; white-space: nowrap; }}
+  .result-table td:nth-child(2) {{ width: 26%; }}
+  .row-scope {{ color: {MUTED}; font-size: 0.72rem; font-weight: 400; }}
+  .fixlist {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px;
+              padding: 10px 14px; margin-bottom: 1.1rem; }}
+  .fixlist-head {{ font-weight: 700; color: {ACCENT}; font-size: 0.95rem; margin-bottom: 6px; }}
+  .fixlist-body {{ max-height: 280px; overflow-y: auto; }}
+  .fixlist-row {{ display: grid; grid-template-columns: 110px minmax(0, 1.6fr) minmax(0, 1fr);
+                  gap: 10px; padding: 4px 0; border-top: 1px solid {BORDER}; font-size: 0.78rem;
+                  align-items: baseline; }}
+  .fixlist-row:first-child {{ border-top: none; }}
+  .fixlist-cat {{ color: {MUTED}; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }}
+  .fixlist-scope {{ color: {MUTED}; font-weight: 400; }}
+  .fixlist-do {{ color: {ACCENT}; }}
+  .gates-strip {{ display: flex; align-items: center; gap: 10px; margin: 0 0 0.8rem; flex-wrap: wrap; }}
+  .gates-label {{ font-size: 0.78rem; color: {MUTED}; white-space: nowrap; }}
+  .gates-dots {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+  .gate-dot {{ width: 11px; height: 11px; border-radius: 3px; display: inline-block; }}
+  .corpus-table {{ margin: 4px 0 0; font-size: 0.78rem; table-layout: auto; }}
+  .corpus-table th, .corpus-table td {{ padding: 0.25rem 0.5rem; }}
+  .corpus-table tr.corpus-total td {{ font-weight: 700; background: #ffffff; }}
+  .qm-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+              gap: 12px; margin: 0.6rem 0 1.3rem; }}
+  .qm-row {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
+  .qm-head {{ display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }}
+  .qm-label {{ font-weight: 700; color: {ACCENT}; font-size: 0.85rem; }}
+  .qm-badge {{ color: white; font-size: 0.62rem; font-weight: 700; padding: 1px 7px;
+               border-radius: 4px; letter-spacing: 0.03em; white-space: nowrap; }}
+  .qm-score {{ margin-left: auto; font-weight: 700; font-size: 0.9rem; color: {ACCENT}; }}
+  .qm-detail {{ font-size: 0.76rem; color: {MUTED}; margin-top: 2px; }}
+  .qm-sample {{ opacity: 0.8; }}
   details.row-expand summary {{ cursor: pointer; list-style: none; }}
   details.row-expand summary::-webkit-details-marker {{ display: none; }}
   details.row-expand summary::before {{ content: "\\25B8  "; color: {MUTED}; }}
@@ -493,18 +687,22 @@ def render_html(report: RunReport) -> str:
 <h1>SIT Output Quality Report</h1>
 <div class="path"><strong>{html.escape(report.label)}</strong><br>{html.escape(report.version_dir)}</div>
 {_generation_info_html(report.generation_info)}
-<div class="verdict" style="background:{RED if n_fail else GREEN};color:white;">
+<div class="verdict" style="background:{RED if (n_fail or gated_critical) else GREEN};color:white;">
   {verdict[0]}: {html.escape(verdict[1])}
 </div>
+
+{_fix_list_html(core, additional)}
 
 <div class="stat-grid">{stat_cards}</div>
 
 {_composition_section_html((report.stats or {}).get("composition", {}))}
 
+{_quality_metrics_section_html(report.quality_metrics)}
+
+{_gates_dot_grid_html(core, additional)}
+
 <h2>Checklist at a glance</h2>
 """]
-
-    core, additional = _core_and_additional(report)
 
     def _glance_rows(groups) -> str:
         rows = []
@@ -537,18 +735,34 @@ def render_html(report: RunReport) -> str:
         shape for every result, PASS or FAIL alike."""
         color = RED if r.status == Status.FAIL else GREEN
         lead, examples = split_detail(r.detail)
-        short = html.escape(_truncate(lead, 90))
-        body = f"<div>{html.escape(_truncate(lead))}</div>"
+        short = _truncate(lead, 90)
+        lead_truncated = short != lead
+        short_html = html.escape(short)
+        body_parts = []
+        if lead_truncated:
+            body_parts.append(f"<div>{html.escape(_truncate(lead))}</div>")
         if examples:
-            body += '<ul class="examples">' + "".join(
-                f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>"
+            body_parts.append('<ul class="examples">' + "".join(
+                f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
         if r.fix:
-            body += f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>'
-        scope_html = f'<div class="row-scope">{html.escape(r.scope)}</div>' if r.scope else ""
+            body_parts.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
+        # Inline (not its own line) - a separate line per row, repeated across
+        # dozens/hundreds of rows in a category, is exactly the kind of
+        # padding-by-repetition that reads as "a lot of gaps" at full-report
+        # scale, even though each individual row looks fine in isolation.
+        scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
+        # Only wrap in <details> when there's genuinely something beyond the
+        # summary (the lead was truncated, or there are examples/a fix) -
+        # otherwise the arrow would expand to reveal the exact same sentence
+        # again, which is just repeated text and dead UI, not more detail.
+        if body_parts:
+            result_html = f'<details class="row-expand"><summary>{short_html}</summary>{"".join(body_parts)}</details>'
+        else:
+            result_html = short_html
         return (
             f'<tr><td><span class="badge" style="background:{color}">{r.status.value}</span></td>'
             f"<td>{html.escape(r.title)}{scope_html}</td>"
-            f'<td><details class="row-expand"><summary>{short}</summary>{body}</details></td></tr>\n'
+            f"<td>{result_html}</td></tr>\n"
         )
 
     def _detail_section(groups) -> None:
@@ -634,8 +848,11 @@ def render_pdf(report: RunReport) -> bytes:
 
     counts = report.counts()
     n_fail = counts.get("FAIL", 0)
-    if n_fail:
-        verdict = f"FAILING - {n_fail} check(s) failed, needs fixes before this output ships."
+    gated_critical = _gated_critical_metrics(report.quality_metrics)
+    if n_fail or gated_critical:
+        extra = (f" + {len(gated_critical)} quality metric(s) below gate threshold "
+                 f"({', '.join(gated_critical)})") if gated_critical else ""
+        verdict = f"FAILING - {n_fail} check(s) failed{extra}, needs fixes before this output ships."
         color = (207, 34, 46)
     else:
         verdict = "CLEAN - every quality check passed for this run."
@@ -645,6 +862,27 @@ def render_pdf(report: RunReport) -> bytes:
     pdf.multi_cell(0, 7, _clean(verdict), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(1)
+
+    core, additional = _core_and_additional(report)
+    fails = [(category, r) for category, results in core + additional
+             for r in results if r.status == Status.FAIL]
+    if fails:
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_text_color(31, 58, 95)
+        pdf.multi_cell(0, 6, _clean(f"Fix these {len(fails)}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 9)
+        for category, r in fails:
+            lead, _examples = split_detail(r.detail)
+            scope_bit = f" ({r.scope})" if r.scope else ""
+            line = f"[{_display_category(category)}] {r.title}{scope_bit} - {_truncate(lead, 140)}"
+            pdf.multi_cell(0, 4.5, _clean(line), new_x="LMARGIN", new_y="NEXT")
+            if r.fix:
+                pdf.set_font("Helvetica", "I", 8.5)
+                pdf.multi_cell(0, 4, _clean(f"    Fix: {_truncate(r.fix, 140)}"),
+                                new_x="LMARGIN", new_y="NEXT")
+                pdf.set_font("Helvetica", "", 9)
+        pdf.ln(2)
 
     dc = report.doc_counts or {}
     if dc:
@@ -698,6 +936,48 @@ def render_pdf(report: RunReport) -> bytes:
         pdf.multi_cell(0, 4, f"total: {dist.get('total', 0)}", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
 
+    cb = (report.stats or {}).get("corpus_breakdown") or {}
+    if cb.get("total_generated"):
+        label_names = {
+            "easy positive": "Easy positive", "hard positive": "Hard positive",
+            "easy negative": "Easy negative", "hard negative": "Hard negative",
+        }
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.multi_cell(0, 5, "Corpus Breakdown (Accepted / Generated / Disagreed / Rate)",
+                        new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+        for b in cb.get("buckets", []):
+            pdf.multi_cell(0, 4.2, _clean(
+                f"{label_names.get(b['label'], b['label'])}: {b['accepted']} / "
+                f"{b['generated']} / {b['disagreed']} / {b['rate']:.1f}%"
+            ), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.multi_cell(0, 4.2, _clean(
+            f"Total: {cb.get('total_accepted', 0)} / {cb.get('total_generated', 0)} / "
+            f"{cb.get('total_disagreed', 0)} / {cb.get('total_rate', 0):.1f}%"
+        ), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.ln(2)
+
+    quality_metrics = report.quality_metrics or {}
+    if quality_metrics:
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.multi_cell(0, 7, "Quality Metrics", new_x="LMARGIN", new_y="NEXT")
+        for key in _METRIC_ORDER:
+            m = quality_metrics.get(key)
+            if not m:
+                continue
+            grade = m.get("grade", "n/a")
+            score = m.get("score")
+            score_str = f"{score:.3f}" if score is not None else "n/a"
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 5, _clean(f"{m['label']}: {score_str} [{grade.replace('_', ' ').upper()}]"),
+                            new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", "", 9)
+            pdf.multi_cell(0, 4.5, _clean(m["detail"]), new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1)
+        pdf.ln(1)
+
     composition = (report.stats or {}).get("composition") or {}
     if composition:
         pdf.set_font("Helvetica", "B", 13)
@@ -720,8 +1000,6 @@ def render_pdf(report: RunReport) -> bytes:
                 pdf.cell(0, 4.2, f"{count} ({pct:.1f}%)", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(1)
         pdf.ln(2)
-
-    core, additional = _core_and_additional(report)
 
     def _glance_block(groups) -> None:
         for category, results in groups:

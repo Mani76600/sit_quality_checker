@@ -325,4 +325,36 @@ def _check_counts_one(fs: FolderSet) -> list[CheckResult]:
                     f"Reconcile the label/polarity distribution in {path} with "
                     "export_summary.json's counts."))
 
+        # Cross-check against the ACTUAL context_output_normalized file's
+        # ground_truth true/false split - independent of export_summary.json
+        # on both sides (unlike the comparison above, and unlike item 5's
+        # own context_output_normalized check, which only ever compares it
+        # back to export_summary's self-reported numbers). Without this,
+        # export_summary.json could sit in the middle silently agreeing with
+        # both real files while they actually disagreed with each other.
+        if labels:
+            lp, ln = labels.get("positive", 0), labels.get("negative", 0)
+            for jf in fs.context_output_normalized_files():
+                scan = _scan_context_normalized_file(jf)
+                if scan.error or scan.not_a_list:
+                    continue
+                if lp == scan.ground_truth_true and ln == scan.ground_truth_false:
+                    results.append(CheckResult(Status.PASS, CATEGORY_67, item_ref,
+                        f"{label}: positive/negative counts match {jf.name} "
+                        "ground_truth (independent of export_summary)",
+                        f"positive={lp} == ground_truth.true={scan.ground_truth_true}, "
+                        f"negative={ln} == ground_truth.false={scan.ground_truth_false}", scope))
+                else:
+                    results.append(CheckResult(Status.FAIL, CATEGORY_67, item_ref,
+                        f"{label}: positive/negative counts match {jf.name} "
+                        "ground_truth (independent of export_summary)",
+                        f"{label} has positive={lp}/negative={ln} but {jf.name} actually has "
+                        f"ground_truth true={scan.ground_truth_true}/false={scan.ground_truth_false} "
+                        f"(delta positive {lp - scan.ground_truth_true:+d}, "
+                        f"negative {ln - scan.ground_truth_false:+d})", scope,
+                        f"Reconcile {label}'s positive/negative label distribution with the "
+                        f"actual ground_truth true/false split in {jf.name} - these two files "
+                        "must describe the same document set regardless of what "
+                        "export_summary.json claims."))
+
     return results
