@@ -1,15 +1,15 @@
-"""Two real bugs found by inspecting a real downloadable report:
+"""Checks the compact, PowerBI-dashboard-style checklist rendering in
+report_render.py:
 
-1. Passed checks only showed "title (scope)" in the HTML/PDF export,
-   dropping the detail text entirely - invisible for checks whose whole
-   point is showing counts (Business Context Balance, Document Format
-   Distribution, ...), even though the live Streamlit app already showed
-   detail for every passed check via a dataframe.
-2. The downloadable HTML/PDF still showed raw category strings like
-   "5. export_summary.json ground truth", even though the live Streamlit
-   app already strips this leading number via its own _display_category
-   (there's no on-screen jump target in a static export either, so the
-   number is just noise) - report_render.py never got the same treatment.
+1. Passed checks show NO per-check detail anywhere - a category where every
+   check passed collapses to one line (name + its total check count). Detail
+   boxes for passes were explicitly identified as "over-showing" real report
+   output and removed; only FAILING checks keep their detail/examples/fix
+   (that's the actionable information).
+2. Category display strips the leading checklist number
+   ("3. context_output_normalized" -> "context_output_normalized") in both
+   the HTML and PDF export - there's no on-screen jump target in a static
+   export, so the number is just noise.
 """
 
 import re
@@ -47,12 +47,21 @@ def _sample_report() -> RunReport:
     return report
 
 
-def test_render_html_shows_detail_for_passed_checks():
+def test_render_html_does_not_show_detail_for_passed_checks():
+    """The PASS category ("context_output_normalized") collapses to a
+    single name+count line - its check's detail text ("Healthcare=5,
+    Finance=3...") must not appear anywhere on the page."""
     html_out = render_html(_sample_report())
-    idx = html_out.find("domain distribution")
-    assert idx != -1
-    # The detail text must appear somewhere near the title, not be dropped.
-    assert "Healthcare=5, Finance=3" in html_out
+    assert "Healthcare=5, Finance=3" not in html_out
+    assert "domain distribution" not in html_out
+    assert "context_output_normalized" in html_out  # the category name itself still shows
+
+
+def test_render_html_shows_detail_only_for_failed_checks():
+    html_out = render_html(_sample_report())
+    assert "counts.total == positive + negative" in html_out
+    assert "5 != 4 (delta +1)" in html_out
+    assert "Reconcile the counts." in html_out
 
 
 def test_render_html_strips_leading_numbers_from_category_display():
@@ -66,7 +75,7 @@ def test_render_html_strips_leading_numbers_from_category_display():
     assert not any(h[:1].isdigit() for h in headers)
 
 
-def test_render_pdf_shows_detail_for_passed_checks_and_strips_numbers():
+def test_render_pdf_shows_fail_detail_but_not_pass_detail_and_strips_numbers():
     import io
 
     from pypdf import PdfReader
@@ -74,7 +83,9 @@ def test_render_pdf_shows_detail_for_passed_checks_and_strips_numbers():
     pdf_bytes = render_pdf(_sample_report())
     assert len(pdf_bytes) > 100
     text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf_bytes)).pages)
-    assert "Healthcare=5, Finance=3" in text
+    assert "Healthcare=5, Finance=3" not in text
+    assert "5 != 4 (delta +1)" in text
+    assert "Reconcile the counts." in text
     assert "3. context_output_normalized" not in text
     assert "5. export_summary.json ground truth" not in text
 
@@ -82,13 +93,15 @@ def test_render_pdf_shows_detail_for_passed_checks_and_strips_numbers():
 def _report_with_huge_detail() -> RunReport:
     """A real downloaded report had a "Content Verification" check whose
     detail joined several full document excerpts together (" || "-separated,
-    several KB total) - unreadable dumped whole into an HTML table cell or a
-    PDF paragraph."""
+    several KB total) - unreadable dumped whole into an HTML/PDF page.
+    FAIL (not PASS) here, since only FAIL details are shown at all now -
+    truncation only matters for the detail that's actually rendered."""
     report = RunReport(label="Test SIT / Version_20260101_0000", version_dir="C:\\out\\Version_20260101_0000")
     huge = " || ".join(f"[doc_{i}.txt] some real document excerpt text here " * 20 for i in range(10))
     report.add(CheckResult(
-        Status.PASS, "9b. Content Verification (value-in-context)", "9b",
+        Status.FAIL, "9b. Content Verification (value-in-context)", "9b",
         "Example value-in-context extractions", huge, "Agreements",
+        "Investigate the listed document(s).",
     ))
     return report
 
@@ -114,24 +127,29 @@ def test_render_pdf_truncates_pathologically_long_detail():
     assert huge_detail not in text
 
 
-def test_render_html_wraps_every_result_in_a_collapsed_details_row():
-    """Every result - PASS or FAIL alike - is a compact table row by
-    default (a short one-line summary). The full detail/examples/fix is
-    tucked behind a native <details> in that same row's cell ONLY when
-    there's genuinely something beyond the summary to reveal (the lead text
-    was truncated, or there are examples/a suggested fix) - a row whose
-    short summary already says everything (like the PASS fixture here, a
-    short detail with no fix) must NOT get a dead expand arrow that just
-    repeats the same sentence again. A large corpus can produce hundreds of
-    results, so the page must open on short, scannable rows, with the full
-    detail reachable with one click wherever there actually is more to see."""
-    html_out = render_html(_sample_report())
-    assert "result-table" in html_out
-    assert "row-expand" in html_out
-    # PASS row's detail is short and has no fix -> no expand wrapper (would
-    # just repeat "domain distribution"/"Healthcare=5, Finance=3..." again).
-    assert "domain distribution" in html_out
-    assert "Healthcare=5, Finance=3" in html_out
-    # FAIL row has a suggested fix beyond its short summary -> gets wrapped.
-    assert html_out.count('<details class="row-expand">') == 1
-    assert "Reconcile the counts." in html_out
+def test_passed_category_collapses_to_a_single_name_and_count_line():
+    """A category where every check passed never gets a per-check table -
+    just one compact row with its total check count, since the color
+    already says every one of them passed."""
+    report = RunReport(label="Test SIT / Version_20260101_0000", version_dir="C:\\out\\Version_20260101_0000")
+    for i in range(3):
+        report.add(CheckResult(Status.PASS, "Folder Structure", "1", f"check {i}", f"detail {i}", "Agreements"))
+    html_out = render_html(report)
+    assert "Folder Structure" in html_out
+    assert ">3<" in html_out  # the total check count for this category
+    for i in range(3):
+        assert f"detail {i}" not in html_out
+
+
+def test_failing_category_lists_only_its_failing_checks():
+    """A category with a mix of PASS and FAIL shows the FAIL(s) in full,
+    but never enumerates the passing checks alongside them."""
+    report = RunReport(label="Test SIT / Version_20260101_0000", version_dir="C:\\out\\Version_20260101_0000")
+    report.add(CheckResult(Status.PASS, "Integrity", "1", "ok check", "nothing wrong here", "Agreements"))
+    report.add(CheckResult(Status.FAIL, "Integrity", "1", "broken check", "it broke", "Agreements", "fix it"))
+    html_out = render_html(report)
+    assert "broken check" in html_out
+    assert "it broke" in html_out
+    assert "ok check" not in html_out
+    assert "nothing wrong here" not in html_out
+    assert ">1 / 2<" in html_out  # 1 passed out of 2 total in this category

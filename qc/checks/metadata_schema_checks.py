@@ -37,6 +37,16 @@ CATEGORY_SELF = "Metadata Schema Self-Consistency"
 CATEGORY_JOIN = "combined_metadata.jsonl vs Individual metadata.json Join"
 ITEM_REF = "addl"
 
+# A handful of file_format values legitimately don't match their real file
+# extension one-for-one - fixed_width is a plain-text representation, so its
+# genuinely correct delivered extension is .txt, not .fixed_width. Confirmed
+# a false positive on real Argentina DNI output (file_format=fixed_width,
+# file_ext=.txt flagged as a mismatch when it's actually correct) - .txt is
+# the expected extension for this format, not a pipeline defect.
+_FORMAT_TO_EXPECTED_EXT = {
+    "fixed_width": "txt",
+}
+
 # Fields confirmed present on both combined_metadata.jsonl rows and
 # individual metadata.json files, cheap/meaningful to cross-check for exact
 # agreement (identity + classification fields - not every single one of the
@@ -76,7 +86,9 @@ def _check_one_metadata_schema(doc: dict, doc_name: str, scope: str) -> list[Che
                     f"{doc_name}: filename extension {actual_suffix!r} != file_ext {file_ext!r}")
             file_format = doc.get("file_format")
             if isinstance(file_format, str) and file_format.strip():
-                if file_format.strip().lower() != file_ext.strip().lstrip(".").lower():
+                format_key = file_format.strip().lower()
+                expected_ext = _FORMAT_TO_EXPECTED_EXT.get(format_key, format_key)
+                if expected_ext != file_ext.strip().lstrip(".").lower():
                     problems.append(
                         f"{doc_name}: file_format {file_format!r} != file_ext {file_ext!r}")
     return problems

@@ -104,7 +104,11 @@ def test_real_report_with_messy_category_names_links_resolve():
     # Files (sit_inverted_index.json / sit_merged_index.json)") - confirm
     # the slugifier still produces matching, unique anchors for these, not
     # just for the clean synthetic names in nav_report_app.py.
-    at = AppTest.from_file(str(REAL_FIXTURE), default_timeout=120)
+    # Timeout generous (was 120s): qc.quality_metrics's exhaustive per-document
+    # scan alone measured ~140s on this real 15,552-document corpus, on top of
+    # the rest of the checklist - 120s was fine before that feature existed
+    # but now reliably times out even with no other load on the machine.
+    at = AppTest.from_file(str(REAL_FIXTURE), default_timeout=600)
     at.run()
     assert not at.exception
     html = _all_markdown_html(at)
@@ -160,21 +164,21 @@ def test_top_metrics_row_has_only_fail_and_pass_with_info_folded_in():
     assert metrics["✅ PASS"] == "1"  # 1 literal PASS + 0 INFO in this fixture
 
 
-def test_info_results_render_as_a_plain_row_not_specially_flagged(monkeypatch):
-    """Every result - FAIL/WARN/PASS/INFO alike - now renders as one
-    compact table row by default (a colored status badge + title + short
-    summary), with the full detail/examples/fix behind a native <details>
-    in that same row - not split into an "actionable callout" vs "passed
-    dataframe". An INFO result's title legitimately appears in the page's
-    markdown now. What must still hold: its own status badge says INFO,
-    not FAIL/WARN - it's never shown as more urgent than it is."""
+def test_info_only_category_folds_into_a_plain_count_row(monkeypatch):
+    """INFO folds into "pass" for checklist purposes - a category whose
+    only result is INFO (never FAIL/WARN) collapses to the same plain
+    count-only row as an all-PASS category, with no detail shown and no
+    failure/warning styling - it's never shown as more urgent than it is,
+    and (per the "no detail for passes" redesign) its detail text doesn't
+    appear on the page at all anymore."""
     monkeypatch.setenv("FIXTURE_DOC_COUNTS", "1")
     at = AppTest.from_file(str(FIXTURE), default_timeout=30)
     at.run()
     assert not at.exception
     html = _all_markdown_html(at)
-    assert "Just a note" in html
-    assert ">INFO<" in html
+    assert "Just a note" not in html
+    assert "detail info" not in html
+    assert "raw_doc Parity" in html  # the category name still shows, as a plain row
 
 
 def test_doc_counts_highlight_renders_when_present(monkeypatch):

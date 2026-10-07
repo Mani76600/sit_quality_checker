@@ -145,36 +145,59 @@ def _corpus_breakdown_html(cb: dict) -> str:
 
 
 def _fix_list_html(grouped: dict, categories: list[str]) -> str:
-    """A single prioritized punch-list of every FAIL across the given
-    categories, meant to sit right under the FAIL/PASS metrics so what's
-    broken is visible in one place instead of only discoverable by opening
-    each category's own table - the Streamlit-rendered twin of
-    report_render.py's own _fix_list_html."""
+    """One minimal card per distinct (category, check) that's failing - a
+    bold headline ("what") with a small muted subline of concrete numbers,
+    and a bold suggested action ("do") with a small muted subline naming
+    the category and its pass rate. Every FAIL for the same check across
+    scopes (Agreements/Positive, Agreements/Negative, ...) collapses into
+    one card - the Streamlit-rendered twin of report_render.py's own
+    _fix_list_html."""
     import html as _html
-    fails = [(category, r) for category in categories for r in grouped[category]
-             if r.status == Status.FAIL]
-    if not fails:
+    groups: dict[tuple[str, str], list] = {}
+    order: list[tuple[str, str]] = []
+    for category in categories:
+        for r in grouped[category]:
+            if r.status != Status.FAIL:
+                continue
+            key = (category, r.title)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(r)
+    if not groups:
         return ""
+
     rows = []
-    for category, r in fails:
-        lead, _examples = split_detail(r.detail)
-        scope_bit = f' <span style="opacity:0.7">({_html.escape(r.scope)})</span>' if r.scope else ""
-        do_bit = _html.escape(_truncate(r.fix, 140)) if r.fix else ""
+    for category, title in order:
+        items = groups[(category, title)]
+        first = items[0]
+        lead, _examples = split_detail(first.detail)
+        scopes = sorted({r.scope for r in items if r.scope})
+        if len(scopes) > 1:
+            scope_bit = f"{len(items)} issue(s) across {len(scopes)} scope(s)"
+        elif scopes:
+            scope_bit = _html.escape(scopes[0])
+        else:
+            scope_bit = f"{len(items)} issue(s)"
+        cat_results = grouped[category]
+        cat_total = len(cat_results)
+        cat_passed = cat_total - sum(1 for r in cat_results if r.status == Status.FAIL)
+        do_text = _html.escape(_truncate(first.fix, 110)) if first.fix else "&mdash;"
         rows.append(
-            '<div style="display:grid;grid-template-columns:110px minmax(0,1.6fr) minmax(0,1fr);'
-            'gap:10px;padding:4px 0;border-top:1px solid rgba(128,128,128,0.25);font-size:0.78rem;'
-            'align-items:baseline;">'
-            '<span style="opacity:0.65;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.03em;">'
-            f'{_html.escape(_display_category(category))}</span>'
-            f'<span>{_html.escape(r.title)}{scope_bit} &mdash; {_html.escape(_truncate(lead, 140))}</span>'
-            f'<span style="color:{ACCENT}">{do_bit}</span>'
+            '<div style="background:rgba(128,128,128,0.06);border-left:4px solid '
+            f'{RED};border-radius:6px;padding:9px 14px;margin:6px 0;display:grid;'
+            'grid-template-columns:70px minmax(0,1fr) minmax(0,1fr);gap:4px 18px;align-items:center;">'
+            f'<span style="font-size:0.68rem;letter-spacing:0.05em;text-transform:uppercase;'
+            f'font-weight:700;color:{RED};">Fix this</span>'
+            f'<span style="font-weight:700;font-size:0.85rem;">{_html.escape(_truncate(title, 90))}'
+            f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
+            f'{_html.escape(_truncate(lead, 110))} &middot; {scope_bit}</small></span>'
+            f'<span style="font-weight:700;font-size:0.82rem;color:{ACCENT};">{do_text}'
+            f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
+            f'{_html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>'
             "</div>"
         )
-    return (
-        f'<div style="font-weight:700;color:{ACCENT};font-size:0.95rem;margin-bottom:4px;">'
-        f"Fix these {len(fails)}</div>"
-        '<div style="max-height:260px;overflow-y:auto;">' + "".join(rows) + "</div>"
-    )
+    return "".join(rows)
 
 
 def _gates_dot_grid_html(grouped: dict, categories: list[str]) -> str:
@@ -201,6 +224,53 @@ def _gates_dot_grid_html(grouped: dict, categories: list[str]) -> str:
         f"{len(categories) - n_fail_groups}/{len(categories)} check group(s) passing</span>"
         f'<div style="display:flex;flex-wrap:wrap;gap:4px;">{dots}</div></div>'
     )
+
+
+def _checklist_html(grouped: dict, categories: list[str], cat_anchor: dict, label: str) -> str:
+    """Compact, PowerBI-dashboard-style checklist - replaces the old glance
+    table + one-expander-per-category detail section. A passing category
+    collapses to a single line (name + its total check count, still
+    clickable via its existing anchor - no per-check detail at all, since
+    the color already says every one of them passed). A failing/warning
+    category shows only its non-PASS checks in full (never the passing
+    ones in that same category)."""
+    import html as _html
+    if not categories:
+        return ""
+    total = sum(len(grouped[c]) for c in categories)
+    bad_total = sum(worst_status(grouped[c])[1][Status.FAIL.value] + worst_status(grouped[c])[1][Status.WARN.value]
+                     for c in categories)
+    rows = [f'<div style="font-size:0.72rem;letter-spacing:0.05em;text-transform:uppercase;'
+            f'opacity:0.65;font-weight:700;margin:1rem 0 0.3rem;">{_html.escape(label)} &middot; '
+            f'{len(categories)} group(s) &middot; {total - bad_total} / {total}</div>']
+    for category in categories:
+        results = grouped[category]
+        _, cat_counts = worst_status(results)
+        n_total = len(results)
+        n_bad = cat_counts[Status.FAIL.value] + cat_counts[Status.WARN.value]
+        name = _html.escape(_display_category(category))
+        anchor_id = cat_anchor[category]
+        anchor_div = f'<div id="{anchor_id}"></div>'
+        link = f'<a href="#{anchor_id}">{name}</a>'
+        if not n_bad:
+            rows.append(
+                f'{anchor_div}<div style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;'
+                'gap:8px;align-items:baseline;padding:4px 0;border-top:1px solid rgba(128,128,128,0.2);'
+                f'font-size:0.82rem;"><span style="color:{GREEN};font-weight:700;">&#10003;</span>'
+                f'<span>{link}</span><span style="opacity:0.7;">{n_total}</span></div>'
+            )
+        else:
+            bad_results = [r for r in results if r.status in (Status.FAIL, Status.WARN)]
+            rows.append(
+                f'{anchor_div}<div style="background:rgba(207,34,46,0.06);border-radius:6px;'
+                'padding:8px 12px;margin:6px 0;">'
+                '<div style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;'
+                f'align-items:baseline;font-size:0.85rem;"><span style="color:{RED};font-weight:700;">'
+                f'&#10005;</span><span><b>{link}</b></span>'
+                f'<span style="color:{RED};font-weight:700;">{n_total - n_bad} / {n_total}</span></div>'
+                + _result_table_html(bad_results) + "</div>"
+            )
+    return "".join(rows)
 
 
 STATUS_ICON = {
@@ -563,40 +633,11 @@ def render_report(report: RunReport) -> None:
     if gates_html:
         st.markdown(gates_html, unsafe_allow_html=True)
 
-    def _glance_table_html(categories: list[str]) -> str:
-        table_rows = []
-        for category in categories:
-            results = grouped[category]
-            _, cat_counts = worst_status(results)
-            worst, eff_passed = cat_effective[category]
-            bits = []
-            if cat_counts[Status.FAIL.value]:
-                bits.append(f"{cat_counts[Status.FAIL.value]} FAILED")
-            if cat_counts[Status.WARN.value]:
-                bits.append(f"{cat_counts[Status.WARN.value]} warning(s)")
-            if not bits:
-                bits = ["All checks passed"]
-            table_rows.append(
-                f'<tr><td style="text-align:center">{STATUS_ICON[worst]}</td>'
-                f'<td><a href="#{cat_anchor[category]}">{_display_category(category)}</a></td>'
-                f'<td>{", ".join(bits)}</td></tr>')
-        return (
-            '<table style="width:100%; border-collapse: collapse;">'
-            '<thead><tr>'
-            '<th style="text-align:center; padding:4px 8px; border-bottom:1px solid rgba(128,128,128,0.4)"></th>'
-            '<th style="text-align:left; padding:4px 8px; border-bottom:1px solid rgba(128,128,128,0.4)">Checklist item</th>'
-            '<th style="text-align:left; padding:4px 8px; border-bottom:1px solid rgba(128,128,128,0.4)">Result</th>'
-            '</tr></thead><tbody>'
-            + "".join(table_rows)
-            + "</tbody></table>"
-        )
-
-    st.markdown("#### Checklist at a glance")
-    st.caption("Click a checklist item to jump straight to it in the Details section below.")
-    st.markdown(_glance_table_html(core_categories), unsafe_allow_html=True)
-    if additional_categories:
-        st.markdown(f"##### {ADDITIONAL_CHECKS_SECTION_TITLE}")
-        st.markdown(_glance_table_html(additional_categories), unsafe_allow_html=True)
+    st.markdown("#### Checklist")
+    st.markdown(_checklist_html(grouped, core_categories, cat_anchor, "Checklist"),
+                unsafe_allow_html=True)
+    st.markdown(_checklist_html(grouped, additional_categories, cat_anchor, ADDITIONAL_CHECKS_SECTION_TITLE),
+                unsafe_allow_html=True)
 
     base_name = f"qc_report_{Path(report.version_dir).name}"
     dl_cols = st.columns(3)
@@ -622,40 +663,6 @@ def render_report(report: RunReport) -> None:
         key=f"dl_pdf_{report.version_dir}",
     )
 
-    def _render_category_details(category: str) -> None:
-        results = grouped[category]
-        _, cat_counts = worst_status(results)
-        worst, eff_passed = cat_effective[category]
-        badge_bits = []
-        if cat_counts[Status.FAIL.value]:
-            badge_bits.append(f"{STATUS_ICON[Status.FAIL.value]}{cat_counts[Status.FAIL.value]}")
-        if cat_counts[Status.WARN.value]:
-            badge_bits.append(f"{STATUS_ICON[Status.WARN.value]}{cat_counts[Status.WARN.value]}")
-        if eff_passed:
-            badge_bits.append(f"{STATUS_ICON[Status.PASS.value]}{eff_passed}")
-        badge = " ".join(badge_bits)
-        needs_attention = worst in (Status.FAIL.value, Status.WARN.value)
-        _anchor(cat_anchor[category])
-        with st.expander(f"{STATUS_ICON[worst]} {_display_category(category)}  —  {badge}",
-                          expanded=needs_attention):
-            # Every result is one compact table row by default - a short
-            # one-line summary, status-colored - with the full detail/
-            # examples/fix behind a native <details> inside that same cell.
-            # Rendered as ONE raw-HTML block (like the HTML/PDF export's own
-            # result-table) rather than one Streamlit widget (columns +
-            # popover) per result: a real report can carry several hundred
-            # results, and a widget-per-row version measured 2-3x slower to
-            # render than this - <details> costs nothing until a viewer
-            # actually opens it, since it's just inert HTML to the browser.
-            st.markdown(_result_table_html(results), unsafe_allow_html=True)
-
-    st.markdown("#### Details (categories with a failure or warning are expanded automatically)")
-    for category in core_categories:
-        _render_category_details(category)
-    if additional_categories:
-        st.markdown(f"#### {ADDITIONAL_CHECKS_SECTION_TITLE}")
-        for category in additional_categories:
-            _render_category_details(category)
 
 
 def render_run_all_summary_table(reports) -> None:

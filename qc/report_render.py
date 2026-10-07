@@ -93,12 +93,6 @@ def _pct_str(pct: float | None) -> str:
     return f"{pct:.1f}%" if pct is not None else "n/a"
 
 
-def _glance_result_text(n_fail_cat: int) -> str:
-    """Deliberately no raw pass-count ("34/34 passed") - the color already
-    says pass/fail; a number nobody needs to act on is just noise."""
-    return "All checks passed" if not n_fail_cat else f"{n_fail_cat} check(s) failed"
-
-
 def _gated_critical_metrics(quality_metrics: dict) -> list[str]:
     """Quality metrics (see qc.quality_metrics) are a different kind of
     result from the PASS/FAIL checklist - graded Strong/Acceptable/Weak/
@@ -391,33 +385,53 @@ def _corpus_breakdown_stat_html(cb: dict) -> str:
 
 
 def _fix_list_html(core, additional) -> str:
-    """A single prioritized punch-list of every FAIL across the whole
-    report, shown right under the verdict banner - so everything broken is
-    visible in one place instead of only discoverable by opening each
-    category's own table one at a time. Adapted from (not copied from) the
-    reference dashboards' flat "fix these N" list, built from our own
-    check-result categories/fixes instead of a fixed external metric set."""
-    fails = [(category, r) for category, results in core + additional
-             for r in results if r.status == Status.FAIL]
-    if not fails:
+    """One minimal card per distinct (category, check) that's failing - a
+    bold headline ("what") with a small muted subline of concrete numbers,
+    and a bold suggested action ("do") with a small muted subline naming
+    the category and its pass rate. Every FAIL CheckResult for the same
+    check is grouped into one card (scopes like Agreements/Positive,
+    Agreements/Negative, ... collapse into one line) rather than one row
+    per scope, matching the "very minimal, to the point" fix-card style of
+    the reference dashboards - adapted to our own data (we group
+    structurally; we don't attempt to semantically re-merge each check's
+    free-text detail the way a hand-written dashboard would)."""
+    cat_results = {category: results for category, results in core + additional}
+    groups: dict[tuple[str, str], list] = {}
+    order: list[tuple[str, str]] = []
+    for category, results in core + additional:
+        for r in results:
+            if r.status != Status.FAIL:
+                continue
+            key = (category, r.title)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(r)
+    if not groups:
         return ""
+
     rows = []
-    for category, r in fails:
-        lead, _examples = split_detail(r.detail)
-        scope_bit = f' <span class="fixlist-scope">({html.escape(r.scope)})</span>' if r.scope else ""
-        do_bit = html.escape(_truncate(r.fix, 140)) if r.fix else ""
-        rows.append(
-            '<div class="fixlist-row">'
-            f'<span class="fixlist-cat">{html.escape(_display_category(category))}</span>'
-            f'<span class="fixlist-what">{html.escape(r.title)}{scope_bit} &mdash; '
-            f'{html.escape(_truncate(lead, 140))}</span>'
-            f'<span class="fixlist-do">{do_bit}</span>'
-            "</div>"
-        )
-    return (
-        f'<div class="fixlist"><div class="fixlist-head">Fix these {len(fails)}</div>'
-        f'<div class="fixlist-body">{"".join(rows)}</div></div>'
-    )
+    for category, title in order:
+        items = groups[(category, title)]
+        first = items[0]
+        lead, _examples = split_detail(first.detail)
+        scopes = sorted({r.scope for r in items if r.scope})
+        if len(scopes) > 1:
+            scope_bit = f"{len(items)} issue(s) across {len(scopes)} scope(s)"
+        elif scopes:
+            scope_bit = f"{html.escape(scopes[0])}"
+        else:
+            scope_bit = f"{len(items)} issue(s)"
+        cat_total = len(cat_results.get(category, []))
+        cat_passed = cat_total - _fail_count(cat_results.get(category, []))
+        do_text = html.escape(_truncate(first.fix, 110)) if first.fix else "&mdash;"
+        rows.append(f"""
+<div class="fixcard">
+  <span class="fixcard-k">Fix this</span>
+  <span class="fixcard-what">{html.escape(_truncate(title, 90))}<small>{html.escape(_truncate(lead, 110))} &middot; {scope_bit}</small></span>
+  <span class="fixcard-do">{do_text}<small>{html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>
+</div>""")
+    return f'<div class="fix-section">{"".join(rows)}</div>'
 
 
 def _gates_dot_grid_html(core, additional) -> str:
@@ -441,6 +455,67 @@ def _gates_dot_grid_html(core, additional) -> str:
         f'<span class="gates-label">{len(groups) - n_fail_groups}/{len(groups)} check group(s) passing</span>'
         f'<div class="gates-dots">{dots}</div></div>'
     )
+
+
+def _fail_detail_html(r) -> str:
+    """One failing check's detail - title, scope, lead text, examples, and
+    suggested fix. Only ever called for FAIL results; passed checks never
+    get this treatment (see _checklist_grid_html)."""
+    lead, examples = split_detail(r.detail)
+    scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
+    body = [f"<div>{html.escape(_truncate(lead))}</div>"]
+    if examples:
+        body.append('<ul class="examples">' + "".join(
+            f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
+    if r.fix:
+        body.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
+    return f'<div class="ckfail-item"><b>{html.escape(r.title)}</b>{scope_html}{"".join(body)}</div>'
+
+
+def _checklist_grid_html(core, additional) -> str:
+    """Compact, PowerBI-dashboard-style checklist, replacing both the old
+    "Checklist at a glance" table and the full per-check results table that
+    used to follow it. A passing category collapses to a single line (name
+    + its total check count - no per-check detail, since the color already
+    says every one of them passed). A failing category gets a highlighted
+    block showing only its FAILING checks, never the passing ones in that
+    same category - at real-report scale (hundreds of checks across dozens
+    of categories), showing full detail for every PASS was "over-showing"
+    far more than it helped."""
+    def _section(label: str, groups) -> str:
+        if not groups:
+            return ""
+        passed = sum(len(results) - _fail_count(results) for _c, results in groups)
+        total = sum(len(results) for _c, results in groups)
+        parts = [f'<div class="checklist-sublabel">{html.escape(label)} &middot; {len(groups)} '
+                 f'group(s) &middot; {passed} / {total}</div>']
+        pass_rows = []
+        for category, results in groups:
+            n_fail_cat = _fail_count(results)
+            n_total = len(results)
+            name = html.escape(_display_category(category))
+            if n_fail_cat:
+                fails = [r for r in results if r.status == Status.FAIL]
+                parts.append(
+                    '<div class="ckfail">'
+                    '<div class="ckfail-head"><span class="mk no">&#10005;</span>'
+                    f'<span class="cn"><b>{name}</b></span>'
+                    f'<span class="cc">{n_total - n_fail_cat} / {n_total}</span></div>'
+                    + "".join(_fail_detail_html(r) for r in fails)
+                    + "</div>"
+                )
+            else:
+                pass_rows.append(
+                    f'<div class="ck"><span class="mk ok">&#10003;</span>'
+                    f'<span class="cn">{name}</span><span class="cc">{n_total}</span></div>'
+                )
+        if pass_rows:
+            parts.append(f'<div class="cks">{"".join(pass_rows)}</div>')
+        return "".join(parts)
+
+    return ('<h2>Checklist</h2>'
+            + _section("Checklist", core)
+            + _section(ADDITIONAL_CHECKS_SECTION_TITLE, additional))
 
 
 _GRADE_COLORS = {
@@ -624,18 +699,11 @@ def render_html(report: RunReport) -> str:
   .show-all-table {{ font-size: 0.72rem; margin: 4px 0 0; max-height: 220px;
                       display: block; overflow-y: auto; }}
   .show-all-table th, .show-all-table td {{ padding: 0.2rem 0.4rem; }}
-  h2.section-divider {{ margin: 1.8rem 0 0.6rem; padding-top: 0.8rem; border-top: 2px solid {ACCENT}; }}
   table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.3rem; table-layout: fixed; }}
   th, td {{ border: 1px solid {BORDER}; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.82rem;
             vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }}
   th {{ background: {PANEL}; color: {ACCENT}; }}
   tbody tr:nth-child(even) {{ background: #fafbfc; }}
-  .badge {{ display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; color: white;
-            font-size: 0.68rem; font-weight: 700; white-space: nowrap; }}
-  .cat {{ margin-top: 1.5rem; padding-top: 0.3rem; border-top: 1px solid {BORDER}; }}
-  .cat:first-of-type {{ border-top: none; }}
-  .cat-header {{ display: flex; align-items: center; gap: 0.5rem; }}
-  .cat h2 {{ padding-bottom: 0.3rem; margin: 0; color: {ACCENT}; }}
   .fix {{ color: {ACCENT}; font-size: 0.78rem; margin-top: 0.3rem; }}
   .examples {{ margin: 0.25rem 0 0.15rem 0; padding-left: 1.1rem; font-size: 0.8rem; }}
   .examples li {{ margin: 0.1rem 0; }}
@@ -643,24 +711,36 @@ def render_html(report: RunReport) -> str:
   details.passed-block summary {{ cursor: pointer; font-size: 0.82rem; color: {MUTED};
     padding: 0.3rem 0; user-select: none; }}
   details.passed-block summary:hover {{ color: {INK}; }}
-  .glance-table td:nth-child(1) {{ width: 70px; }}
-  .glance-table td:nth-child(2) {{ width: 45%; }}
-  .result-table {{ table-layout: auto; line-height: 1.25; }}
-  .result-table td, .result-table th {{ padding: 0.18rem 0.5rem; }}
-  .result-table td:nth-child(1) {{ width: 64px; white-space: nowrap; }}
-  .result-table td:nth-child(2) {{ width: 26%; }}
   .row-scope {{ color: {MUTED}; font-size: 0.72rem; font-weight: 400; }}
-  .fixlist {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px;
-              padding: 10px 14px; margin-bottom: 1.1rem; }}
-  .fixlist-head {{ font-weight: 700; color: {ACCENT}; font-size: 0.95rem; margin-bottom: 6px; }}
-  .fixlist-body {{ max-height: 280px; overflow-y: auto; }}
-  .fixlist-row {{ display: grid; grid-template-columns: 110px minmax(0, 1.6fr) minmax(0, 1fr);
-                  gap: 10px; padding: 4px 0; border-top: 1px solid {BORDER}; font-size: 0.78rem;
-                  align-items: baseline; }}
-  .fixlist-row:first-child {{ border-top: none; }}
-  .fixlist-cat {{ color: {MUTED}; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }}
-  .fixlist-scope {{ color: {MUTED}; font-weight: 400; }}
-  .fixlist-do {{ color: {ACCENT}; }}
+  /* Fix cards - one per distinct failing check, minimal "what/do" layout */
+  .fix-section {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 1.1rem; }}
+  .fixcard {{ background: {PANEL}; border-left: 4px solid {RED}; border-radius: 6px;
+              padding: 9px 14px; display: grid; grid-template-columns: 70px minmax(0, 1fr) minmax(0, 1fr);
+              gap: 4px 18px; align-items: center; }}
+  .fixcard-k {{ font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase;
+                font-weight: 700; color: {RED}; }}
+  .fixcard-what {{ font-weight: 700; font-size: 0.85rem; }}
+  .fixcard-do {{ font-weight: 700; font-size: 0.82rem; color: {ACCENT}; }}
+  .fixcard-what small, .fixcard-do small {{ display: block; font-weight: 400; font-size: 0.74rem;
+    color: {MUTED}; margin-top: 1px; }}
+  /* Checklist - compact pass rows (name + count only) vs highlighted fail blocks */
+  .checklist-sublabel {{ font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase;
+    color: {MUTED}; font-weight: 700; margin: 1.1rem 0 0.4rem; }}
+  .cks {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 18px; }}
+  .ck {{ display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
+         padding: 4px 0; border-top: 1px solid {BORDER}; font-size: 0.82rem; }}
+  .mk {{ width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center;
+         justify-content: center; font-size: 0.65rem; font-weight: 700; }}
+  .mk.ok {{ background: #dff1e7; color: {GREEN}; }}
+  .mk.no {{ background: #f8dddd; color: {RED}; }}
+  .cn {{ overflow-wrap: anywhere; }}
+  .cc {{ color: {MUTED}; font-variant-numeric: tabular-nums; }}
+  .ckfail {{ background: #fdf1f1; border-radius: 6px; padding: 8px 12px; margin: 6px 0; }}
+  .ckfail-head {{ display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px;
+                  align-items: baseline; font-size: 0.85rem; }}
+  .ckfail-head .cc {{ color: {RED}; font-weight: 700; }}
+  .ckfail-item {{ margin: 6px 0 0 26px; font-size: 0.8rem; }}
+  .ckfail-item b {{ font-weight: 700; }}
   .gates-strip {{ display: flex; align-items: center; gap: 10px; margin: 0 0 0.8rem; flex-wrap: wrap; }}
   .gates-label {{ font-size: 0.78rem; color: {MUTED}; white-space: nowrap; }}
   .gates-dots {{ display: flex; flex-wrap: wrap; gap: 4px; }}
@@ -678,11 +758,7 @@ def render_html(report: RunReport) -> str:
   .qm-score {{ margin-left: auto; font-weight: 700; font-size: 0.9rem; color: {ACCENT}; }}
   .qm-detail {{ font-size: 0.76rem; color: {MUTED}; margin-top: 2px; }}
   .qm-sample {{ opacity: 0.8; }}
-  details.row-expand summary {{ cursor: pointer; list-style: none; }}
-  details.row-expand summary::-webkit-details-marker {{ display: none; }}
-  details.row-expand summary::before {{ content: "\\25B8  "; color: {MUTED}; }}
-  details.row-expand[open] summary::before {{ content: "\\25BE  "; }}
-  details.row-expand[open] summary {{ color: {MUTED}; font-size: 0.74rem; margin-bottom: 0.3rem; }}
+
 </style></head><body>
 <h1>SIT Output Quality Report</h1>
 <div class="path"><strong>{html.escape(report.label)}</strong><br>{html.escape(report.version_dir)}</div>
@@ -701,90 +777,8 @@ def render_html(report: RunReport) -> str:
 
 {_gates_dot_grid_html(core, additional)}
 
-<h2>Checklist at a glance</h2>
-"""]
-
-    def _glance_rows(groups) -> str:
-        rows = []
-        for category, results in groups:
-            n_fail_cat = _fail_count(results)
-            worst_color = RED if n_fail_cat else GREEN
-            worst_label = "FAIL" if n_fail_cat else "PASS"
-            rows.append(
-                f'<tr><td><span class="badge" style="background:{worst_color}">'
-                f'{worst_label}</span></td><td>{html.escape(_display_category(category))}</td>'
-                f"<td>{html.escape(_glance_result_text(n_fail_cat))}</td></tr>\n")
-        return "".join(rows)
-
-    parts.append(
-        '<table class="glance-table"><tr><th>Status</th><th>Checklist item</th><th>Result</th></tr>'
-        + _glance_rows(core) + "</table>\n")
-    if additional:
-        parts.append(
-            f'<h2 class="section-divider">{html.escape(ADDITIONAL_CHECKS_SECTION_TITLE)}</h2>\n'
-            '<table class="glance-table"><tr><th>Status</th><th>Checklist item</th><th>Result</th></tr>'
-            + _glance_rows(additional) + "</table>\n")
-
-    def _result_row_html(r) -> str:
-        """Every result (FAIL or PASS) is one compact table row by default -
-        a short one-line summary, status-colored, with the full detail/
-        examples/fix tucked behind a native <details> inside the same cell
-        so expanding it doesn't disturb the table layout. No separate
-        "always-expanded FAIL block" vs "collapsed PASS table" split
-        anymore - one consistent minimal-by-default, expand-for-more row
-        shape for every result, PASS or FAIL alike."""
-        color = RED if r.status == Status.FAIL else GREEN
-        lead, examples = split_detail(r.detail)
-        short = _truncate(lead, 90)
-        lead_truncated = short != lead
-        short_html = html.escape(short)
-        body_parts = []
-        if lead_truncated:
-            body_parts.append(f"<div>{html.escape(_truncate(lead))}</div>")
-        if examples:
-            body_parts.append('<ul class="examples">' + "".join(
-                f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
-        if r.fix:
-            body_parts.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
-        # Inline (not its own line) - a separate line per row, repeated across
-        # dozens/hundreds of rows in a category, is exactly the kind of
-        # padding-by-repetition that reads as "a lot of gaps" at full-report
-        # scale, even though each individual row looks fine in isolation.
-        scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
-        # Only wrap in <details> when there's genuinely something beyond the
-        # summary (the lead was truncated, or there are examples/a fix) -
-        # otherwise the arrow would expand to reveal the exact same sentence
-        # again, which is just repeated text and dead UI, not more detail.
-        if body_parts:
-            result_html = f'<details class="row-expand"><summary>{short_html}</summary>{"".join(body_parts)}</details>'
-        else:
-            result_html = short_html
-        return (
-            f'<tr><td><span class="badge" style="background:{color}">{r.status.value}</span></td>'
-            f"<td>{html.escape(r.title)}{scope_html}</td>"
-            f"<td>{result_html}</td></tr>\n"
-        )
-
-    def _detail_section(groups) -> None:
-        for category, results in groups:
-            n_fail_cat = _fail_count(results)
-            worst_color = RED if n_fail_cat else GREEN
-            worst_label = "FAIL" if n_fail_cat else "PASS"
-            parts.append(
-                f'<div class="cat"><div class="cat-header">'
-                f'<span class="badge" style="background:{worst_color}">{worst_label}</span>'
-                f'<h2>{html.escape(_display_category(category))}</h2></div>\n'
-                '<table class="result-table"><tr><th>Status</th><th>Check</th><th>Result</th></tr>\n')
-            for r in results:
-                parts.append(_result_row_html(r))
-            parts.append("</table></div>\n")
-
-    _detail_section(core)
-    if additional:
-        parts.append(f'<h2 class="section-divider">{html.escape(ADDITIONAL_CHECKS_SECTION_TITLE)}</h2>\n')
-        _detail_section(additional)
-
-    parts.append("</body></html>")
+{_checklist_grid_html(core, additional)}
+</body></html>"""]
     return "".join(parts)
 
 
@@ -1001,74 +995,56 @@ def render_pdf(report: RunReport) -> bytes:
             pdf.ln(1)
         pdf.ln(2)
 
-    def _glance_block(groups) -> None:
-        for category, results in groups:
-            n_fail_cat = _fail_count(results)
-            worst_label = "FAIL" if n_fail_cat else "PASS"
-            pdf.set_text_color(*((207, 34, 46) if n_fail_cat else (26, 127, 55)))
-            pdf.multi_cell(0, 5, _clean(f"[{worst_label}] {_display_category(category)}: "
-                                         f"{_glance_result_text(n_fail_cat)}"),
-                            new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(0, 0, 0)
-
-    pdf.set_font("Helvetica", "B", 13)
-    pdf.multi_cell(0, 7, "Checklist at a glance", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 9)
-    _glance_block(core)
-    if additional:
-        pdf.ln(2)
+    def _checklist_block(label: str, groups) -> None:
+        """One line per category: a pass is just "[OK] Name  N" (no
+        per-check detail - the color already says every one of them
+        passed); a fail shows its count plus the failing checks only,
+        never the passing ones in that same category. Mirrors
+        _checklist_grid_html's HTML/Streamlit behavior."""
+        if not groups:
+            return
+        passed = sum(len(results) - _fail_count(results) for _c, results in groups)
+        total = sum(len(results) for _c, results in groups)
         pdf.set_font("Helvetica", "B", 11)
         pdf.set_text_color(31, 58, 95)
-        pdf.multi_cell(0, 6, _clean(ADDITIONAL_CHECKS_SECTION_TITLE), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 6, _clean(f"{label} - {len(groups)} group(s) - {passed} / {total}"),
+                        new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
         pdf.set_font("Helvetica", "", 9)
-        _glance_block(additional)
-    pdf.ln(3)
-
-    def _detail_block(groups) -> None:
         for category, results in groups:
-            pdf.set_font("Helvetica", "B", 12)
-            pdf.multi_cell(0, 7, _clean(_display_category(category)), new_x="LMARGIN", new_y="NEXT")
-            actionable = [r for r in results if r.status == Status.FAIL]
-            passed = [r for r in results if r.status != Status.FAIL]
+            n_fail_cat = _fail_count(results)
+            n_total = len(results)
+            name = _display_category(category)
+            if not n_fail_cat:
+                pdf.multi_cell(0, 5, _clean(f"[OK]  {name}  ({n_total})"), new_x="LMARGIN", new_y="NEXT")
+                continue
+            pdf.set_text_color(207, 34, 46)
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.multi_cell(0, 5, _clean(f"[FAIL]  {name}  ({n_total - n_fail_cat} / {n_total})"),
+                            new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(0, 0, 0)
             pdf.set_font("Helvetica", "", 9)
-            for r in actionable:
-                pdf.set_font("Helvetica", "B", 9)
-                pdf.set_text_color(207, 34, 46)
+            for r in results:
+                if r.status != Status.FAIL:
+                    continue
                 scope_note = f" ({r.scope})" if r.scope else ""
-                pdf.multi_cell(0, 5, _clean(f"[FAIL] {r.title}{scope_note}"),
-                                new_x="LMARGIN", new_y="NEXT")
-                pdf.set_text_color(0, 0, 0)
-                pdf.set_font("Helvetica", "", 9)
                 lead, examples = split_detail(r.detail)
-                pdf.multi_cell(0, 5, _clean(_truncate(lead)), new_x="LMARGIN", new_y="NEXT")
-                for item in examples:
-                    pdf.multi_cell(0, 5, _clean(f"    - {_truncate(item)}"), new_x="LMARGIN", new_y="NEXT")
-                if r.fix:
-                    pdf.set_font("Helvetica", "I", 9)
-                    pdf.multi_cell(0, 5, _clean(f"Suggested fix: {r.fix}"), new_x="LMARGIN", new_y="NEXT")
-                    pdf.set_font("Helvetica", "", 9)
-                pdf.ln(1)
-            if passed:
-                pdf.set_font("Helvetica", "I", 8)
-                pdf.set_text_color(26, 127, 55)
-                pdf.multi_cell(0, 4, _clean(f"{len(passed)} passed check(s):"),
+                pdf.multi_cell(0, 5, _clean(f"    - {r.title}{scope_note}: {_truncate(lead, 200)}"),
                                 new_x="LMARGIN", new_y="NEXT")
-                for p in passed:
-                    label = f"    - {p.title} ({p.scope})" if p.scope else f"    - {p.title}"
-                    lead, _examples = split_detail(p.detail)
-                    if lead:
-                        label += f": {_truncate(lead)}"
-                    pdf.multi_cell(0, 4, _clean(label), new_x="LMARGIN", new_y="NEXT")
-                pdf.set_text_color(0, 0, 0)
-            pdf.ln(2)
+                for item in examples:
+                    pdf.multi_cell(0, 4.5, _clean(f"        - {_truncate(item, 160)}"),
+                                    new_x="LMARGIN", new_y="NEXT")
+                if r.fix:
+                    pdf.set_font("Helvetica", "I", 8.5)
+                    pdf.multi_cell(0, 4.5, _clean(f"        Fix: {_truncate(r.fix, 160)}"),
+                                    new_x="LMARGIN", new_y="NEXT")
+                    pdf.set_font("Helvetica", "", 9)
+            pdf.ln(1)
+        pdf.ln(2)
 
-    _detail_block(core)
-    if additional:
-        pdf.set_font("Helvetica", "B", 13)
-        pdf.set_text_color(31, 58, 95)
-        pdf.multi_cell(0, 7, _clean(ADDITIONAL_CHECKS_SECTION_TITLE), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(0, 0, 0)
-        _detail_block(additional)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.multi_cell(0, 7, "Checklist", new_x="LMARGIN", new_y="NEXT")
+    _checklist_block("Checklist", core)
+    _checklist_block(ADDITIONAL_CHECKS_SECTION_TITLE, additional)
 
     return bytes(pdf.output())
