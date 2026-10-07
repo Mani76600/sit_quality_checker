@@ -320,43 +320,67 @@ def _format_legend_html(top: list, other_count: int, total: int) -> str:
     return f'<ul class="comp-legend">{"".join(items)}</ul>'
 
 
+_BUSINESS_CONTEXT_LABELS = {
+    "domain": "Domain", "department": "Department", "function": "Function",
+    "workflow": "Workflow", "process": "Process", "persona": "Persona",
+    "role": "Role", "document_type": "Document type",
+}
+
+
+def _business_context_spread_html(composition: dict) -> str:
+    """One compact row per business-context dimension - distinct value
+    count, the share range across every value (min-max %, from the full
+    "all" distribution, not just the top N), and what an evenly-split
+    distribution would look like (100/distinct). Replaces 8 separate
+    bar-chart cards (one per dimension, each with its own "show all N
+    value(s)" expand) with a single summary table - at real-report scale
+    some of these dimensions have 30-180+ distinct values, and a reader
+    checking for balance only ever needs "how many values, how skewed is
+    it", not every individual value's bar."""
+    rows = []
+    for key, label in _BUSINESS_CONTEXT_LABELS.items():
+        data = composition.get(key)
+        all_values = data.get("all") if data else None
+        if not all_values:
+            continue
+        distinct = data["distinct"]
+        min_pct = all_values[-1][2]
+        max_pct = all_values[0][2]
+        even_pct = 100.0 / distinct if distinct else 0.0
+        rows.append(
+            f"<tr><td>{html.escape(label)}</td><td><b>{distinct}</b></td>"
+            f"<td>{min_pct:.1f}&ndash;{max_pct:.1f}%</td><td>{even_pct:.1f}%</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        '<div class="stat-card stat-card-wide"><div class="stat-label">Business Context Spread</div>'
+        '<table class="bc-table"><tr><th>Dimension</th><th>Values</th>'
+        "<th>Share range</th><th>If even</th></tr>" + "".join(rows) + "</table></div>"
+    )
+
+
 def _composition_section_html(composition: dict) -> str:
     if not composition:
         return ""
-    cards = []
-    for key, title in _COMPOSITION_TITLES.items():
-        data = composition.get(key)
-        if not data or not data.get("top"):
-            continue
-        all_values = data.get("all", data["top"])
-        if key == _DONUT_CATEGORY_KEY:
-            top = data["top"]
-            other_count = data["total"] - sum(c for _v, c, _p in top)
-            body = (
-                '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">'
-                + _category_donut_svg(top, other_count, data["total"])
-                + _format_legend_html(top, other_count, data["total"])
-                + "</div>"
-                + _show_all_table_html(all_values, len(top))
-            )
-        else:
-            rows = "".join(
-                f'<div class="comp-row"><span class="comp-name" title="{html.escape(str(value))}">'
-                f'{html.escape(str(value))}</span>'
-                f'<div class="bar-track"><div class="bar-fill" style="width:{pct:.1f}%;'
-                f'background:{ACCENT}"></div></div>'
-                f'<span class="comp-value">{count} ({pct:.1f}%)</span></div>'
-                for value, count, pct in data["top"]
-            )
-            body = rows + _show_all_table_html(all_values, len(data["top"]))
-        cards.append(
-            f'<div class="comp-card"><div class="stat-label">{html.escape(title)}</div>'
-            f'{body}</div>')
-    if not cards:
+    data = composition.get(_DONUT_CATEGORY_KEY)
+    if not data or not data.get("top"):
         return ""
+    title = _COMPOSITION_TITLES[_DONUT_CATEGORY_KEY]
+    all_values = data.get("all", data["top"])
+    top = data["top"]
+    other_count = data["total"] - sum(c for _v, c, _p in top)
+    body = (
+        '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">'
+        + _category_donut_svg(top, other_count, data["total"])
+        + _format_legend_html(top, other_count, data["total"])
+        + "</div>"
+        + _show_all_table_html(all_values, len(top))
+    )
+    card = f'<div class="comp-card"><div class="stat-label">{html.escape(title)}</div>{body}</div>'
     return (
         '<details class="passed-block" open><summary>Document composition - most common counts'
-        '</summary><div class="comp-grid">' + "".join(cards) + "</div></details>"
+        f'</summary><div class="comp-grid">{card}</div></details>'
     )
 
 
@@ -369,7 +393,7 @@ def _corpus_breakdown_stat_html(cb: dict) -> str:
     }
     rows = "".join(
         f'<tr><td>{label_names.get(b["label"], b["label"])}</td>'
-        f'<td>{b["accepted"]:,}</td><td>{b["generated"]:,}</td>'
+        f'<td class="bc-acc">{b["accepted"]:,}</td><td>{b["generated"]:,}</td>'
         f'<td>{b["disagreed"]:,}</td><td>{b["rate"]:.1f}%</td></tr>'
         for b in cb.get("buckets", [])
     )
@@ -378,7 +402,7 @@ def _corpus_breakdown_stat_html(cb: dict) -> str:
   <div class="stat-label">Corpus Breakdown</div>
   <table class="corpus-table"><tr><th></th><th>Accepted</th><th>Generated</th><th>Disagreed</th><th>Rate</th></tr>
   {rows}
-  <tr class="corpus-total"><td>Total</td><td>{cb.get("total_accepted", 0):,}</td>
+  <tr class="corpus-total"><td>Total</td><td class="bc-acc">{cb.get("total_accepted", 0):,}</td>
   <td>{cb.get("total_generated", 0):,}</td><td>{cb.get("total_disagreed", 0):,}</td>
   <td>{cb.get("total_rate", 0):.1f}%</td></tr></table>
 </div>"""
@@ -434,27 +458,75 @@ def _fix_list_html(core, additional) -> str:
     return f'<div class="fix-section">{"".join(rows)}</div>'
 
 
-def _gates_dot_grid_html(core, additional) -> str:
-    """Compact strip of colored dots, one per checklist category group
-    (green = all passed, red = at least one FAIL) - a faster visual scan
-    than reading every row of the glance table below it. Adapted from (not
-    copied from) the reference dashboards' "gates" panel, using our own
-    category groups instead of a fixed metric set."""
+def _gates_summary_html(report: RunReport, core, additional) -> str:
+    """Three glanceable summary cards - QC Checks, Quality Metrics, MCE
+    Detection - each leading with one big bold number, shown right at the
+    top so the overall health of a run is readable without scrolling.
+    Adapted from (not copied from) the reference dashboards' "gates" row,
+    built from our own category groups / quality metrics / MCE stats
+    instead of a fixed external metric set."""
     groups = core + additional
-    if not groups:
+    cards = []
+
+    if groups:
+        total_checks = sum(len(results) for _c, results in groups)
+        failed_checks = sum(_fail_count(results) for _c, results in groups)
+        n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
+        dots = "".join(
+            f'<span class="gate-dot" style="background:{RED if _fail_count(results) else GREEN}" '
+            f'title="{html.escape(_display_category(category))}"></span>'
+            for category, results in groups
+        )
+        pill = (f"{n_fail_groups} group(s) failed", RED) if n_fail_groups else ("All passing", GREEN)
+        cards.append(f"""
+<div class="gate-card{' bad' if n_fail_groups else ''}">
+  <div class="gate-head"><span class="gate-title">QC Checks</span>
+  <span class="gate-pill" style="background:{pill[1]}">{pill[0]}</span></div>
+  <div class="gate-fig">{total_checks - failed_checks:,} / {total_checks:,}</div>
+  <div class="gate-sub">{len(groups) - n_fail_groups} of {len(groups)} groups</div>
+  <div class="gate-dots">{dots}</div>
+</div>""")
+
+    qm = report.quality_metrics or {}
+    scored = [m for m in qm.values() if m.get("score") is not None]
+    if scored:
+        qm_bad = any(m.get("gate") and m.get("grade") == "critical" for m in scored)
+        chips = "".join(
+            f'<span class="gate-chip" style="background:{_GRADE_COLORS.get(m["grade"], MUTED)}">'
+            f'{html.escape(m["label"].split()[0])} {m["score"]:.3f}</span>'
+            for m in scored
+        )
+        cards.append(f"""
+<div class="gate-card{' bad' if qm_bad else ''}">
+  <div class="gate-head"><span class="gate-title">Quality Metrics</span>
+  <span class="gate-pill" style="background:{RED if qm_bad else GREEN}">{"Below threshold" if qm_bad else "In range"}</span></div>
+  <div class="gate-fig">{len(scored)}</div>
+  <div class="gate-sub">metric(s) scored</div>
+  <div class="gate-chips">{chips}</div>
+</div>""")
+
+    mce = (report.stats or {}).get("mce_coverage") or {}
+    if mce.get("checked"):
+        pos, neg = mce.get("positive", {}), mce.get("negative", {})
+        pct = mce.get("pct")
+        mce_bad = pct is None or pct < 99.999
+        pos_ok = (pos.get("pct") or 0) >= 99.999
+        neg_ok = (neg.get("pct") or 0) >= 99.999
+        cards.append(f"""
+<div class="gate-card{' bad' if mce_bad else ''}">
+  <div class="gate-head"><span class="gate-title">MCE Detection</span>
+  <span class="gate-pill" style="background:{RED if mce_bad else GREEN}">{"Gap" if mce_bad else "Full coverage"}</span></div>
+  <div class="gate-fig">{_pct_str(pct)}</div>
+  <div class="gate-sub">{mce.get("detected", 0):,} / {mce.get("checked", 0):,}</div>
+  <div class="gate-chips">
+    <span class="gate-chip" style="background:{GREEN if pos_ok else RED}">Positive {pos.get("detected", 0):,} / {pos.get("checked", 0):,}</span>
+    <span class="gate-chip" style="background:{GREEN if neg_ok else RED}">Negative {neg.get("detected", 0):,} / {neg.get("checked", 0):,}</span>
+  </div>
+</div>""")
+
+    if not cards:
         return ""
-    n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
-    dots = "".join(
-        f'<span class="gate-dot" style="background:{RED if _fail_count(results) else GREEN}" '
-        f'title="{html.escape(_display_category(category))}: '
-        f'{"FAIL" if _fail_count(results) else "PASS"}"></span>'
-        for category, results in groups
-    )
-    return (
-        '<div class="gates-strip">'
-        f'<span class="gates-label">{len(groups) - n_fail_groups}/{len(groups)} check group(s) passing</span>'
-        f'<div class="gates-dots">{dots}</div></div>'
-    )
+    return f'<div class="gates-row">{"".join(cards)}</div>'
 
 
 def _fail_detail_html(r) -> str:
@@ -625,6 +697,7 @@ def render_html(report: RunReport) -> str:
         _document_length_stat_html((report.stats or {}).get("document_length", {})),
         _label_distribution_stat_html((report.stats or {}).get("label_distribution", {})),
         _corpus_breakdown_stat_html((report.stats or {}).get("corpus_breakdown", {})),
+        _business_context_spread_html((report.stats or {}).get("composition", {})),
     ])
 
     parts = [f"""<!doctype html>
@@ -741,13 +814,31 @@ def render_html(report: RunReport) -> str:
   .ckfail-head .cc {{ color: {RED}; font-weight: 700; }}
   .ckfail-item {{ margin: 6px 0 0 26px; font-size: 0.8rem; }}
   .ckfail-item b {{ font-weight: 700; }}
-  .gates-strip {{ display: flex; align-items: center; gap: 10px; margin: 0 0 0.8rem; flex-wrap: wrap; }}
-  .gates-label {{ font-size: 0.78rem; color: {MUTED}; white-space: nowrap; }}
-  .gates-dots {{ display: flex; flex-wrap: wrap; gap: 4px; }}
+  .gates-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 12px; margin-bottom: 1.1rem; }}
+  .gate-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-top: 4px solid {GREEN};
+                border-radius: 8px; padding: 11px 15px 13px; }}
+  .gate-card.bad {{ border-top-color: {RED}; }}
+  .gate-head {{ display: flex; justify-content: space-between; align-items: baseline;
+                gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }}
+  .gate-title {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+                 color: {MUTED}; font-weight: 700; }}
+  .gate-pill {{ color: white; font-size: 0.62rem; font-weight: 700; padding: 2px 8px;
+                border-radius: 999px; white-space: nowrap; }}
+  .gate-fig {{ font-size: 1.7rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; }}
+  .gate-sub {{ font-size: 0.74rem; color: {MUTED}; margin: 1px 0 6px; }}
+  .gate-dots {{ display: flex; flex-wrap: wrap; gap: 3px; }}
   .gate-dot {{ width: 11px; height: 11px; border-radius: 3px; display: inline-block; }}
+  .gate-chips {{ display: flex; flex-wrap: wrap; gap: 5px; }}
+  .gate-chip {{ color: white; font-size: 0.68rem; font-weight: 700; padding: 2px 7px;
+                border-radius: 4px; white-space: nowrap; }}
   .corpus-table {{ margin: 4px 0 0; font-size: 0.78rem; table-layout: auto; }}
   .corpus-table th, .corpus-table td {{ padding: 0.25rem 0.5rem; }}
   .corpus-table tr.corpus-total td {{ font-weight: 700; background: #ffffff; }}
+  .corpus-table .bc-acc {{ font-weight: 700; color: {ACCENT}; }}
+  .bc-table {{ margin: 4px 0 0; font-size: 0.78rem; table-layout: auto; }}
+  .bc-table th, .bc-table td {{ padding: 0.25rem 0.5rem; text-align: right; }}
+  .bc-table th:first-child, .bc-table td:first-child {{ text-align: left; }}
   .qm-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
               gap: 12px; margin: 0.6rem 0 1.3rem; }}
   .qm-row {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
@@ -761,11 +852,13 @@ def render_html(report: RunReport) -> str:
 
 </style></head><body>
 <h1>SIT Output Quality Report</h1>
-<div class="path"><strong>{html.escape(report.label)}</strong><br>{html.escape(report.version_dir)}</div>
+<div class="path"><strong>{html.escape(report.label)}</strong></div>
 {_generation_info_html(report.generation_info)}
 <div class="verdict" style="background:{RED if (n_fail or gated_critical) else GREEN};color:white;">
   {verdict[0]}: {html.escape(verdict[1])}
 </div>
+
+{_gates_summary_html(report, core, additional)}
 
 {_fix_list_html(core, additional)}
 
@@ -774,8 +867,6 @@ def render_html(report: RunReport) -> str:
 {_composition_section_html((report.stats or {}).get("composition", {}))}
 
 {_quality_metrics_section_html(report.quality_metrics)}
-
-{_gates_dot_grid_html(core, additional)}
 
 {_checklist_grid_html(core, additional)}
 </body></html>"""]
@@ -819,7 +910,6 @@ def render_pdf(report: RunReport) -> bytes:
     pdf.set_font("Helvetica", "", 10)
     pdf.set_text_color(107, 114, 128)
     pdf.multi_cell(0, 5, _clean(report.label), new_x="LMARGIN", new_y="NEXT")
-    pdf.multi_cell(0, 5, _clean(report.version_dir), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
 
     info = report.generation_info or {}
@@ -858,6 +948,30 @@ def render_pdf(report: RunReport) -> bytes:
     pdf.ln(1)
 
     core, additional = _core_and_additional(report)
+
+    groups = core + additional
+    if groups:
+        total_checks = sum(len(results) for _c, results in groups)
+        failed_checks = sum(_fail_count(results) for _c, results in groups)
+        n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.multi_cell(0, 5, _clean(
+            f"QC Checks: {total_checks - failed_checks:,} / {total_checks:,} "
+            f"({len(groups) - n_fail_groups} of {len(groups)} groups passing)"
+        ), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+    qm_scored = [m for m in (report.quality_metrics or {}).values() if m.get("score") is not None]
+    if qm_scored:
+        pdf.multi_cell(0, 5, _clean(
+            "Quality Metrics: " + "; ".join(f"{m['label']} {m['score']:.3f}" for m in qm_scored)
+        ), new_x="LMARGIN", new_y="NEXT")
+    mce = (report.stats or {}).get("mce_coverage") or {}
+    if mce.get("checked"):
+        pdf.multi_cell(0, 5, _clean(
+            f"MCE Detection: {_pct_str(mce.get('pct'))} ({mce.get('detected', 0):,} / {mce.get('checked', 0):,})"
+        ), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
     fails = [(category, r) for category, results in core + additional
              for r in results if r.status == Status.FAIL]
     if fails:

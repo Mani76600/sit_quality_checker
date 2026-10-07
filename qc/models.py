@@ -98,13 +98,26 @@ def strip_root_prefix(report: RunReport, root: str) -> None:
     keep its private extraction temp-dir path (e.g.
     ``/tmp/qcweb_xxx/extracted/``) out of anything a user sees or
     downloads - only the meaningful part of the path (SIT/.../Version_.../
-    file) should ever be shown."""
+    file) should ever be shown.
+
+    Several check modules build their "e.g. [...]" example lists via an
+    f-string that interpolates the list directly (``f"... e.g. {paths[:5]}"``)
+    - Python formats a list by calling repr() on each element, which
+    backslash-escapes every real backslash, so a Windows path inside one of
+    these lists is stored in ``detail`` with doubled backslashes
+    (``C:\\\\QCatuomation\\\\...``) until detail_format.split_detail() later
+    parses it back out via ast.literal_eval. Stripping must therefore match
+    the doubled form too, or it silently no-ops on exactly the paths most
+    likely to appear in a FAIL's example list - confirmed as a real leak on
+    real output (the root directory survived intact in every Integrity
+    "file(s) failed to parse" example)."""
     if not root:
         return
     root = str(root)
     bases = {root, root.replace("\\", "/"), root.replace("/", "\\")}
+    bases |= {b.replace("\\", "\\\\") for b in bases}  # repr()-escaped form, see above
     prefixes = sorted(
-        {b.rstrip("/\\") + sep for b in bases for sep in ("/", "\\")},
+        {b.rstrip("/\\") + sep for b in bases for sep in ("/", "\\", "\\\\")},
         key=len, reverse=True,
     )
 

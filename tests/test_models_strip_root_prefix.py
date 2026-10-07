@@ -51,3 +51,25 @@ def test_strip_root_prefix_handles_missing_or_empty_fields():
                          detail="", scope="", fix="", evidence=[]))
     strip_root_prefix(rep, "/tmp/root")
     assert rep.version_dir == "x"
+
+
+def test_strip_root_prefix_handles_repr_escaped_paths_in_example_lists():
+    """Several check modules build their "e.g. [...]" example lists via an
+    f-string that interpolates the list directly (e.g.
+    integrity_checks.py: f"... e.g. {bad_json[:5]}") - Python formats a list
+    by calling repr() on each string element, which backslash-escapes every
+    real backslash, so a Windows path inside it is stored in `detail` with
+    DOUBLED backslashes until detail_format.split_detail() later parses it
+    back out via ast.literal_eval. Confirmed as a real leak on real output:
+    the root directory survived intact in every Integrity "file(s) failed
+    to parse" example since the un-doubled root never matched."""
+    root = r"C:\QCatuomation\South Africa Identification Number"
+    bad_paths = [f"{root}\\Version_1\\Positive\\outputs\\parsed_raw_doc\\foo.json: Expecting value"]
+    detail = f"1 file(s) failed to parse, e.g. {bad_paths[:5]}"
+    rep = RunReport(label="x", version_dir=root + r"\Version_1")
+    rep.add(CheckResult(status=Status.FAIL, category="Integrity", item_ref="1",
+                         title="t", detail=detail, scope="Agreements"))
+    strip_root_prefix(rep, root)
+    assert root not in rep.results[0].detail
+    assert "South Africa Identification Number" not in rep.results[0].detail
+    assert "Version_1" in rep.results[0].detail

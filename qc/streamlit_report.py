@@ -17,7 +17,8 @@ from qc.check_groups import ADDITIONAL_CHECK_CATEGORIES, ADDITIONAL_CHECKS_SECTI
 from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
-    _gated_critical_metrics, _quality_metrics_section_html, _truncate, render_html, render_pdf,
+    _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
+    _quality_metrics_section_html, _truncate, render_html, render_pdf,
 )
 
 def _inject_metric_css() -> None:
@@ -60,6 +61,36 @@ def _inject_metric_css() -> None:
         f".qm-score {{ margin-left: auto; font-weight: 700; font-size: 0.9rem; color: {ACCENT}; }}"
         ".qm-detail { font-size: 0.76rem; opacity: 0.75; margin-top: 2px; }"
         ".qm-sample { opacity: 0.8; }"
+        # Business Context Spread table (see report_render.py's own
+        # _business_context_spread_html, reused as-is here).
+        ".stat-card { background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25); "
+        "border-radius: 8px; padding: 12px 14px; margin: 0.4rem 0 1rem; }"
+        ".stat-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; "
+        "opacity: 0.7; margin-bottom: 6px; }"
+        ".bc-table { margin: 4px 0 0; font-size: 0.85rem; width: 100%; border-collapse: collapse; }"
+        ".bc-table th, .bc-table td { padding: 0.25rem 0.5rem; text-align: right; "
+        "border-top: 1px solid rgba(128,128,128,0.2); }"
+        ".bc-table th:first-child, .bc-table td:first-child { text-align: left; }"
+        # Gates summary row (see report_render.py's own _gates_summary_html,
+        # reused as-is here) - same class names, defined once per render.
+        ".gates-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); "
+        "gap: 12px; margin-bottom: 1.1rem; }"
+        f".gate-card {{ background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25); "
+        f"border-top: 4px solid {GREEN}; border-radius: 8px; padding: 11px 15px 13px; }}"
+        f".gate-card.bad {{ border-top-color: {RED}; }}"
+        ".gate-head { display: flex; justify-content: space-between; align-items: baseline; "
+        "gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }"
+        ".gate-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; "
+        "opacity: 0.7; font-weight: 700; }"
+        ".gate-pill { color: white; font-size: 0.62rem; font-weight: 700; padding: 2px 8px; "
+        "border-radius: 999px; white-space: nowrap; }"
+        f".gate-fig {{ font-size: 1.7rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; }}"
+        ".gate-sub { font-size: 0.74rem; opacity: 0.7; margin: 1px 0 6px; }"
+        ".gate-dots { display: flex; flex-wrap: wrap; gap: 3px; }"
+        ".gate-dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }"
+        ".gate-chips { display: flex; flex-wrap: wrap; gap: 5px; }"
+        ".gate-chip { color: white; font-size: 0.68rem; font-weight: 700; padding: 2px 7px; "
+        "border-radius: 4px; white-space: nowrap; }"
         "</style>",
         unsafe_allow_html=True,
     )
@@ -117,9 +148,10 @@ def _corpus_breakdown_html(cb: dict) -> str:
         "easy positive": "Easy positive", "hard positive": "Hard positive",
         "easy negative": "Easy negative", "hard negative": "Hard negative",
     }
+    acc_style = f"text-align:right;padding:3px 6px;font-weight:700;color:{ACCENT}"
     rows = "".join(
         f'<tr><td style="padding:3px 6px">{label_names.get(b["label"], b["label"])}</td>'
-        f'<td style="text-align:right;padding:3px 6px">{b["accepted"]:,}</td>'
+        f'<td style="{acc_style}">{b["accepted"]:,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{b["generated"]:,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{b["disagreed"]:,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{b["rate"]:.1f}%</td></tr>'
@@ -136,7 +168,7 @@ def _corpus_breakdown_html(cb: dict) -> str:
         f"<tbody>{rows}"
         '<tr style="font-weight:700;border-top:1px solid rgba(128,128,128,0.4)">'
         '<td style="padding:3px 6px">Total</td>'
-        f'<td style="text-align:right;padding:3px 6px">{cb.get("total_accepted", 0):,}</td>'
+        f'<td style="{acc_style}">{cb.get("total_accepted", 0):,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{cb.get("total_generated", 0):,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{cb.get("total_disagreed", 0):,}</td>'
         f'<td style="text-align:right;padding:3px 6px">{cb.get("total_rate", 0):.1f}%</td></tr>'
@@ -198,32 +230,6 @@ def _fix_list_html(grouped: dict, categories: list[str]) -> str:
             "</div>"
         )
     return "".join(rows)
-
-
-def _gates_dot_grid_html(grouped: dict, categories: list[str]) -> str:
-    """Compact strip of colored dots, one per checklist category group
-    (green = all passed, red = at least one FAIL) - a faster visual scan
-    than reading every row of the glance table below it."""
-    if not categories:
-        return ""
-    import html as _html
-
-    def _cat_fail(category: str) -> int:
-        return sum(1 for r in grouped[category] if r.status == Status.FAIL)
-
-    n_fail_groups = sum(1 for c in categories if _cat_fail(c))
-    dots = "".join(
-        '<span style="width:11px;height:11px;border-radius:3px;display:inline-block;'
-        f'background:{RED if _cat_fail(c) else GREEN}" '
-        f'title="{_html.escape(_display_category(c))}: {"FAIL" if _cat_fail(c) else "PASS"}"></span>'
-        for c in categories
-    )
-    return (
-        '<div style="display:flex;align-items:center;gap:10px;margin:0 0 0.6rem;flex-wrap:wrap;">'
-        f'<span style="font-size:0.78rem;opacity:0.7;white-space:nowrap;">'
-        f"{len(categories) - n_fail_groups}/{len(categories)} check group(s) passing</span>"
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px;">{dots}</div></div>'
-    )
 
 
 def _checklist_html(grouped: dict, categories: list[str], cat_anchor: dict, label: str) -> str:
@@ -423,7 +429,6 @@ def render_report(report: RunReport) -> None:
     report_anchor = _slugify("run", report.version_dir)
     _anchor(report_anchor)
     st.subheader(report.label)
-    st.caption(str(report.version_dir))
 
     if report.discovery_note:
         st.caption(f"📁 {report.discovery_note}")
@@ -538,56 +543,30 @@ def render_report(report: RunReport) -> None:
         st.markdown(quality_metrics_html, unsafe_allow_html=True)
 
     composition = stats.get("composition") or {}
-    if composition:
-        with st.expander("📊 Document composition - most common counts", expanded=False):
-            comp_titles = {
-                "format": "File format", "domain": "Domain", "department": "Department",
-                "function": "Function", "workflow": "Workflow", "process": "Process",
-                "persona": "Persona", "role": "Role", "document_type": "Document type",
-            }
-            comp_cols = st.columns(2)
-            i = 0
-            for key, title in comp_titles.items():
-                data = composition.get(key)
-                if not data or not data.get("top"):
-                    continue
-                all_values = data.get("all", data["top"])
-                with comp_cols[i % 2]:
-                    st.markdown(f"**{title}**")
-                    if key == "format":
-                        top = data["top"]
-                        other_count = data["total"] - sum(c for _v, c, _p in top)
-                        st.markdown(
-                            '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">'
-                            + _category_donut_html(top, other_count, data["total"])
-                            + _category_legend_html(top, other_count, data["total"])
-                            + "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        bar_rows = "".join(
-                            f'<div style="display:flex;align-items:center;gap:7px;margin:3px 0;">'
-                            f'<span style="width:42%;flex:0 0 auto;font-size:0.78rem;color:#6b7280;'
-                            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" '
-                            f'title="{v}">{v}</span>'
-                            f'<div style="flex:1 1 auto;height:9px;border-radius:5px;background:{TRACK};'
-                            f'overflow:hidden;"><div style="height:100%;border-radius:5px;width:{p:.1f}%;'
-                            f'background:{ACCENT};"></div></div>'
-                            f'<span style="width:90px;flex:0 0 auto;font-size:0.78rem;text-align:right;">'
-                            f"{c} ({p:.1f}%)</span></div>"
-                            for v, c, p in data["top"]
-                        )
-                        st.markdown(bar_rows, unsafe_allow_html=True)
-                    # Full scrollable list (every distinct value, not just the
-                    # top ones shown above) instead of a dead-end "+N more".
-                    remaining = data["distinct"] - len(data["top"])
-                    if remaining > 0:
-                        with st.expander(f"Show all {data['distinct']} value(s)"):
-                            all_df = pd.DataFrame(
-                                [{"value": v, "count": c, "pct": f"{p:.1f}%"} for v, c, p in all_values]
-                            ).set_index("value")
-                            st.dataframe(all_df, width='stretch', hide_index=False, height=250)
-                i += 1
+    format_data = composition.get("format")
+    if format_data and format_data.get("top"):
+        st.markdown("**File format**")
+        top = format_data["top"]
+        other_count = format_data["total"] - sum(c for _v, c, _p in top)
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">'
+            + _category_donut_html(top, other_count, format_data["total"])
+            + _category_legend_html(top, other_count, format_data["total"])
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        all_values = format_data.get("all", top)
+        remaining = format_data["distinct"] - len(top)
+        if remaining > 0:
+            with st.expander(f"Show all {format_data['distinct']} value(s)"):
+                all_df = pd.DataFrame(
+                    [{"value": v, "count": c, "pct": f"{p:.1f}%"} for v, c, p in all_values]
+                ).set_index("value")
+                st.dataframe(all_df, width='stretch', hide_index=False, height=250)
+
+    bc_spread_html = _business_context_spread_html(composition)
+    if bc_spread_html:
+        st.markdown(bc_spread_html, unsafe_allow_html=True)
 
     grouped = report.by_category()
     ordered_categories = sorted(grouped, key=category_sort_key)
@@ -626,12 +605,16 @@ def render_report(report: RunReport) -> None:
                     counts.get("PASS", 0) + counts.get("INFO", 0))
 
     all_categories = core_categories + additional_categories
+    gates_html = _gates_summary_html(
+        report,
+        [(c, grouped[c]) for c in core_categories],
+        [(c, grouped[c]) for c in additional_categories],
+    )
+    if gates_html:
+        st.markdown(gates_html, unsafe_allow_html=True)
     fix_list_html = _fix_list_html(grouped, all_categories)
     if fix_list_html:
         st.markdown(fix_list_html, unsafe_allow_html=True)
-    gates_html = _gates_dot_grid_html(grouped, all_categories)
-    if gates_html:
-        st.markdown(gates_html, unsafe_allow_html=True)
 
     st.markdown("#### Checklist")
     st.markdown(_checklist_html(grouped, core_categories, cat_anchor, "Checklist"),
