@@ -18,7 +18,7 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
     _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
-    _quality_metrics_section_html, _truncate, render_html, render_pdf,
+    _quality_metrics_section_html, _truncate, _truncate_short, render_html, render_pdf,
 )
 
 def _inject_metric_css() -> None:
@@ -112,6 +112,7 @@ def _result_table_html(results) -> str:
     rows = []
     for r in results:
         lead, examples = split_detail(r.detail)
+        lead = lead.rstrip().rstrip(",")  # dangling comma before a stripped "e.g. [...]"
         short = _truncate(lead, 90)
         lead_truncated = short != lead
         short_html = _html.escape(short)
@@ -206,24 +207,29 @@ def _fix_list_html(grouped: dict, categories: list[str]) -> str:
         lead, _examples = split_detail(first.detail)
         scopes = sorted({r.scope for r in items if r.scope})
         if len(scopes) > 1:
-            scope_bit = f"{len(items)} issue(s) across {len(scopes)} scope(s)"
+            scope_bit = f"{len(items)} scope(s)"
         elif scopes:
             scope_bit = _html.escape(scopes[0])
         else:
-            scope_bit = f"{len(items)} issue(s)"
+            scope_bit = ""
         cat_results = grouped[category]
         cat_total = len(cat_results)
         cat_passed = cat_total - sum(1 for r in cat_results if r.status == Status.FAIL)
-        do_text = _html.escape(_truncate(first.fix, 110)) if first.fix else "&mdash;"
+        # Direct, concrete wording first (the actual numbers/fact), with the
+        # technical check name demoted to a small subline.
+        what_sub = _html.escape(_truncate_short(title, 80))
+        if scope_bit:
+            what_sub += f" &middot; {scope_bit}"
+        do_text = _html.escape(_truncate_short(first.fix, 90)) if first.fix else "&mdash;"
         rows.append(
             '<div style="background:rgba(128,128,128,0.06);border-left:4px solid '
-            f'{RED};border-radius:6px;padding:9px 14px;margin:6px 0;display:grid;'
+            f'{RED};border-radius:6px;padding:8px 12px;margin:5px 0;display:grid;'
             'grid-template-columns:70px minmax(0,1fr) minmax(0,1fr);gap:4px 18px;align-items:center;">'
             f'<span style="font-size:0.68rem;letter-spacing:0.05em;text-transform:uppercase;'
             f'font-weight:700;color:{RED};">Fix this</span>'
-            f'<span style="font-weight:700;font-size:0.85rem;">{_html.escape(_truncate(title, 90))}'
+            f'<span style="font-weight:700;font-size:0.85rem;">{_html.escape(_truncate_short(lead, 90))}'
             f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
-            f'{_html.escape(_truncate(lead, 110))} &middot; {scope_bit}</small></span>'
+            f'{what_sub}</small></span>'
             f'<span style="font-weight:700;font-size:0.82rem;color:{ACCENT};">{do_text}'
             f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
             f'{_html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>'
@@ -451,27 +457,33 @@ def render_report(report: RunReport) -> None:
         st.caption(" &nbsp;·&nbsp; ".join(info_bits), unsafe_allow_html=True)
 
     dc = report.doc_counts or {}
-    if dc:
-        ag, da = dc.get("agreements", {}), dc.get("disagreements", {})
-        hi_cols = st.columns(4)
-        hi_cols[0].metric(
-            "Total documents (all)",
-            dc.get("combined_total") if dc.get("combined_total") is not None else "—",
-        )
-        hi_cols[1].metric(
-            "Total documents (Agreements)",
-            dc.get("total") if dc.get("total") is not None else "—",
-        )
-        hi_cols[2].metric("Agreements", f"{ag.get('positive', '—')} pos / {ag.get('negative', '—')} neg")
-        hi_cols[3].metric("Disagreements", f"{da.get('positive', '—')} pos / {da.get('negative', '—')} neg")
-
     stats = report.stats or {}
     mce = stats.get("mce_coverage") or {}
     dist = stats.get("label_distribution") or {}
     doc_length = stats.get("document_length") or {}
-    if mce.get("checked") or dist.get("total") or doc_length.get("total"):
-        stat_cols = st.columns(3)
-        with stat_cols[0]:
+
+    # Documents + MCE Detection Coverage merged into one row - these two
+    # always sat side by side anyway, so merging them reads as a single
+    # glance instead of two separate ones.
+    if dc or mce.get("checked"):
+        doc_mce_cols = st.columns(2)
+        with doc_mce_cols[0]:
+            if dc:
+                ag, da = dc.get("agreements", {}), dc.get("disagreements", {})
+                st.markdown("**Documents**")
+                hi_cols = st.columns(2)
+                hi_cols[0].metric(
+                    "Total documents (all)",
+                    dc.get("combined_total") if dc.get("combined_total") is not None else "—",
+                )
+                hi_cols[1].metric(
+                    "Total documents (Agreements)",
+                    dc.get("total") if dc.get("total") is not None else "—",
+                )
+                hi_cols2 = st.columns(2)
+                hi_cols2[0].metric("Agreements", f"{ag.get('positive', '—')} pos / {ag.get('negative', '—')} neg")
+                hi_cols2[1].metric("Disagreements", f"{da.get('positive', '—')} pos / {da.get('negative', '—')} neg")
+        with doc_mce_cols[1]:
             if mce.get("checked"):
                 st.markdown("**MCE detection coverage**")
                 pos, neg = mce.get("positive", {}), mce.get("negative", {})
@@ -484,18 +496,21 @@ def render_report(report: RunReport) -> None:
                     + '<span style="width:56px;flex:0 0 auto;font-size:0.8rem;color:#6b7280;">Positive</span>'
                     + _split_bar_html(pos_pct)
                     + f'<span style="width:140px;flex:0 0 auto;font-size:0.8rem;text-align:right;">'
-                      f'{_pct_str(pos_pct)} ({pos.get("detected", 0)}/{pos.get("checked", 0)})</span></div>'
+                      f'<b>{_pct_str(pos_pct)}</b> ({pos.get("detected", 0)}/{pos.get("checked", 0)})</span></div>'
                     + '<div style="display:flex;align-items:center;gap:8px;margin:3px 0;">'
                     + '<span style="width:56px;flex:0 0 auto;font-size:0.8rem;color:#6b7280;">Negative</span>'
                     + _split_bar_html(neg_pct)
                     + f'<span style="width:140px;flex:0 0 auto;font-size:0.8rem;text-align:right;">'
-                      f'{_pct_str(neg_pct)} ({neg.get("detected", 0)}/{neg.get("checked", 0)})</span></div>'
+                      f'<b>{_pct_str(neg_pct)}</b> ({neg.get("detected", 0)}/{neg.get("checked", 0)})</span></div>'
                     + f'<div style="font-size:0.78rem;color:#6b7280;margin-top:2px;">'
-                      f'{mce.get("detected", 0)}/{mce.get("checked", 0)} total documents detected</div>'
+                      f'<b>{mce.get("detected", 0)}</b>/{mce.get("checked", 0)} total documents detected</div>'
                       "</div></div>",
                     unsafe_allow_html=True,
                 )
-        with stat_cols[1]:
+
+    if dist.get("total") or doc_length.get("total"):
+        stat_cols = st.columns(2)
+        with stat_cols[0]:
             if doc_length.get("total"):
                 st.markdown("**Document Length**")
                 st.caption("Character count distribution across the corpus")
@@ -514,7 +529,7 @@ def render_report(report: RunReport) -> None:
                 mini_cols[0].metric("Min", f"{doc_length.get('min', 0):,}")
                 mini_cols[1].metric("Median", median_str)
                 mini_cols[2].metric("Max", f"{doc_length.get('max', 0):,}")
-        with stat_cols[2]:
+        with stat_cols[1]:
             if dist.get("total"):
                 st.markdown("**Easy / Hard &times; Positive / Negative**")
                 dist_df = pd.DataFrame(
@@ -555,14 +570,14 @@ def render_report(report: RunReport) -> None:
             + "</div>",
             unsafe_allow_html=True,
         )
+        # Every distinct value shown directly below, no collapse/expand -
+        # a reader comparing file formats wants the full list in one
+        # glance, not a click-to-expand step.
         all_values = format_data.get("all", top)
-        remaining = format_data["distinct"] - len(top)
-        if remaining > 0:
-            with st.expander(f"Show all {format_data['distinct']} value(s)"):
-                all_df = pd.DataFrame(
-                    [{"value": v, "count": c, "pct": f"{p:.1f}%"} for v, c, p in all_values]
-                ).set_index("value")
-                st.dataframe(all_df, width='stretch', hide_index=False, height=250)
+        all_df = pd.DataFrame(
+            [{"value": v, "count": c, "pct": f"{p:.1f}%"} for v, c, p in all_values]
+        ).set_index("value")
+        st.dataframe(all_df, width='stretch', hide_index=False, height=250)
 
     bc_spread_html = _business_context_spread_html(composition)
     if bc_spread_html:

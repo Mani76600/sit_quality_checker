@@ -49,6 +49,21 @@ def _truncate(text: str, limit: int = MAX_DETAIL_CHARS) -> str:
     return text[:limit].rstrip() + f"... (truncated, {len(text):,} chars total)"
 
 
+def _truncate_short(text: str, limit: int) -> str:
+    """Same idea as _truncate, but for compact card/chip contexts (fix
+    cards, gate chips) where the "(truncated, N chars total)" meta-text
+    reads as noise/indirect rather than information - just a clean
+    ellipsis, no commentary about the truncation itself. Also trims a
+    dangling trailing comma (many checks build detail text like "N file(s)
+    failed to parse, e.g. [...]" where split_detail() strips the "e.g.
+    [...]" part out into its own examples list, leaving an orphaned comma
+    at the end of the lead sentence)."""
+    text = (text or "").strip().rstrip(",")
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip().rstrip(",") + "…"
+
+
 def _category_sort_key(category: str):
     m = re.match(r"^(\d+)", category)
     return (int(m.group(1)) if m else 999, category)
@@ -133,30 +148,57 @@ def _split_bar_html(pct: float | None) -> str:
     return f'<div class="bar-track"><div class="bar-fill" style="width:{pct:.1f}%;background:{color}"></div></div>'
 
 
-def _mce_stat_html(mce: dict) -> str:
-    if not mce or not mce.get("checked"):
+def _doc_counts_and_mce_html(dc: dict, mce: dict) -> str:
+    """Documents + MCE Detection Coverage merged into one wide card (two
+    columns) - these were two separate cards that always appeared side by
+    side anyway, so merging them into one reads as a single glance instead
+    of two. Every count in the Documents column is bolded/colored (not just
+    the big total), since the pos/neg breakdown numbers are exactly the
+    kind of thing a reader scans for first."""
+    has_mce = bool(mce and mce.get("checked"))
+    if not dc and not has_mce:
         return ""
-    pos, neg = mce.get("positive", {}), mce.get("negative", {})
-    return f"""
-<div class="stat-card stat-card-wide">
-  <div class="stat-label">MCE detection coverage</div>
-  <div class="mce-layout">
-    {_donut_svg(mce.get("pct"))}
-    <div class="mce-bars">
-      <div class="mce-bar-row">
-        <span class="mce-bar-label">Positive</span>
-        {_split_bar_html(pos.get("pct"))}
-        <span class="mce-bar-value">{_pct_str(pos.get("pct"))} ({pos.get("detected", 0)}/{pos.get("checked", 0)})</span>
+
+    docs_col = ""
+    if dc:
+        ag, da = dc.get("agreements", {}) or {}, dc.get("disagreements", {}) or {}
+        combined = dc.get("combined_total")
+        total = dc.get("total")
+        docs_col = f"""
+    <div class="doc-mce-col">
+      <div class="stat-label">Documents</div>
+      <div class="stat-primary">{combined if combined is not None else "&mdash;"}</div>
+      <div class="stat-secondary">total (Agreements + Disagreements)</div>
+      <div class="stat-secondary">Agreements: <span class="stat-count">{total if total is not None else "&mdash;"}</span>
+        (<span class="stat-count">{ag.get("positive", "&mdash;")}</span> pos / <span class="stat-count">{ag.get("negative", "&mdash;")}</span> neg)</div>
+      <div class="stat-secondary">Disagreements: <span class="stat-count">{da.get("positive", "&mdash;")}</span> pos / <span class="stat-count">{da.get("negative", "&mdash;")}</span> neg</div>
+    </div>"""
+
+    mce_col = ""
+    if has_mce:
+        pos, neg = mce.get("positive", {}), mce.get("negative", {})
+        mce_col = f"""
+    <div class="doc-mce-col">
+      <div class="stat-label">MCE detection coverage</div>
+      <div class="mce-layout">
+        {_donut_svg(mce.get("pct"))}
+        <div class="mce-bars">
+          <div class="mce-bar-row">
+            <span class="mce-bar-label">Positive</span>
+            {_split_bar_html(pos.get("pct"))}
+            <span class="mce-bar-value"><span class="stat-count">{_pct_str(pos.get("pct"))}</span> ({pos.get("detected", 0)}/{pos.get("checked", 0)})</span>
+          </div>
+          <div class="mce-bar-row">
+            <span class="mce-bar-label">Negative</span>
+            {_split_bar_html(neg.get("pct"))}
+            <span class="mce-bar-value"><span class="stat-count">{_pct_str(neg.get("pct"))}</span> ({neg.get("detected", 0)}/{neg.get("checked", 0)})</span>
+          </div>
+          <div class="stat-secondary"><span class="stat-count">{mce.get("detected", 0)}</span> / {mce.get("checked", 0)} total documents detected</div>
+        </div>
       </div>
-      <div class="mce-bar-row">
-        <span class="mce-bar-label">Negative</span>
-        {_split_bar_html(neg.get("pct"))}
-        <span class="mce-bar-value">{_pct_str(neg.get("pct"))} ({neg.get("detected", 0)}/{neg.get("checked", 0)})</span>
-      </div>
-      <div class="stat-secondary">{mce.get("detected", 0)} / {mce.get("checked", 0)} total documents detected</div>
-    </div>
-  </div>
-</div>"""
+    </div>"""
+
+    return f'<div class="stat-card stat-card-widest doc-mce-card">{docs_col}{mce_col}</div>'
 
 
 def _label_distribution_stat_html(dist: dict) -> str:
@@ -267,22 +309,19 @@ _CATEGORY_PALETTE = ["#1f3a5f", "#2d5a8b", "#3978b8", "#5b9bd5", "#7fb3e0",
 _OTHER_COLOR = "#c7ced8"
 
 
-def _show_all_table_html(all_values: list, visible_count: int) -> str:
-    """A real expandable list of every distinct value (not just the top N
-    shown inline) - replaces a dead-end "+N more distinct value(s)" label
-    with something the user can actually open and read."""
-    remaining = all_values[visible_count:]
-    if not remaining:
+def _all_values_table_html(all_values: list) -> str:
+    """Every distinct value, always visible (no collapse/expand) - a reader
+    comparing file formats wants the full list in one glance, not a
+    dead-end "+N more" label or a click-to-expand step."""
+    if not all_values:
         return ""
     rows = "".join(
-        f"<tr><td>{html.escape(str(value))}</td><td>{count}</td><td>{pct:.1f}%</td></tr>"
-        for value, count, pct in remaining
+        f"<tr><td>{html.escape(str(value))}</td><td>{count:,}</td><td>{pct:.1f}%</td></tr>"
+        for value, count, pct in all_values
     )
     return (
-        f'<details class="show-all"><summary>Show all {len(all_values)} value(s) '
-        f'(+{len(remaining)} more)</summary>'
         '<table class="show-all-table"><tr><th>Value</th><th>Count</th><th>%</th></tr>'
-        f"{rows}</table></details>"
+        f"{rows}</table>"
     )
 
 
@@ -361,6 +400,9 @@ def _business_context_spread_html(composition: dict) -> str:
 
 
 def _composition_section_html(composition: dict) -> str:
+    """File format: a donut + legend for the share-of-whole visual, plus
+    every distinct value always shown directly in a plain table underneath
+    - no collapse/expand, covering every value in one glance."""
     if not composition:
         return ""
     data = composition.get(_DONUT_CATEGORY_KEY)
@@ -371,17 +413,15 @@ def _composition_section_html(composition: dict) -> str:
     top = data["top"]
     other_count = data["total"] - sum(c for _v, c, _p in top)
     body = (
-        '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">'
+        '<div class="format-layout">'
+        '<div class="format-donut-col">'
         + _category_donut_svg(top, other_count, data["total"])
         + _format_legend_html(top, other_count, data["total"])
         + "</div>"
-        + _show_all_table_html(all_values, len(top))
+        f'<div class="format-table-col">{_all_values_table_html(all_values)}</div>'
+        "</div>"
     )
-    card = f'<div class="comp-card"><div class="stat-label">{html.escape(title)}</div>{body}</div>'
-    return (
-        '<details class="passed-block" open><summary>Document composition - most common counts'
-        f'</summary><div class="comp-grid">{card}</div></details>'
-    )
+    return f'<div class="stat-card stat-card-widest"><div class="stat-label">{html.escape(title)}</div>{body}</div>'
 
 
 def _corpus_breakdown_stat_html(cb: dict) -> str:
@@ -441,18 +481,24 @@ def _fix_list_html(core, additional) -> str:
         lead, _examples = split_detail(first.detail)
         scopes = sorted({r.scope for r in items if r.scope})
         if len(scopes) > 1:
-            scope_bit = f"{len(items)} issue(s) across {len(scopes)} scope(s)"
+            scope_bit = f"{len(items)} scope(s)"
         elif scopes:
-            scope_bit = f"{html.escape(scopes[0])}"
+            scope_bit = html.escape(scopes[0])
         else:
-            scope_bit = f"{len(items)} issue(s)"
+            scope_bit = ""
         cat_total = len(cat_results.get(category, []))
         cat_passed = cat_total - _fail_count(cat_results.get(category, []))
-        do_text = html.escape(_truncate(first.fix, 110)) if first.fix else "&mdash;"
+        # Direct, concrete wording first (the actual numbers/fact - "5000 !=
+        # 4459"), with the technical check name demoted to a small subline -
+        # a plain reader scans the fact, not the check's internal title.
+        what_sub = html.escape(_truncate_short(title, 80))
+        if scope_bit:
+            what_sub += f" &middot; {scope_bit}"
+        do_text = html.escape(_truncate_short(first.fix, 90)) if first.fix else "&mdash;"
         rows.append(f"""
 <div class="fixcard">
   <span class="fixcard-k">Fix this</span>
-  <span class="fixcard-what">{html.escape(_truncate(title, 90))}<small>{html.escape(_truncate(lead, 110))} &middot; {scope_bit}</small></span>
+  <span class="fixcard-what">{html.escape(_truncate_short(lead, 90))}<small>{what_sub}</small></span>
   <span class="fixcard-do">{do_text}<small>{html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>
 </div>""")
     return f'<div class="fix-section">{"".join(rows)}</div>'
@@ -534,6 +580,7 @@ def _fail_detail_html(r) -> str:
     suggested fix. Only ever called for FAIL results; passed checks never
     get this treatment (see _checklist_grid_html)."""
     lead, examples = split_detail(r.detail)
+    lead = lead.rstrip().rstrip(",")  # split_detail can leave a dangling comma before a stripped "e.g. [...]"
     scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
     body = [f"<div>{html.escape(_truncate(lead))}</div>"]
     if examples:
@@ -659,22 +706,6 @@ def _quality_metrics_section_html(quality_metrics: dict) -> str:
     return f'<h2>Quality Metrics</h2><div class="qm-grid">{"".join(rows)}</div>'
 
 
-def _doc_counts_stat_html(dc: dict) -> str:
-    if not dc:
-        return ""
-    ag, da = dc.get("agreements", {}) or {}, dc.get("disagreements", {}) or {}
-    combined = dc.get("combined_total")
-    total = dc.get("total")
-    return f"""
-<div class="stat-card">
-  <div class="stat-label">Documents</div>
-  <div class="stat-primary">{combined if combined is not None else "&mdash;"}</div>
-  <div class="stat-secondary">total (Agreements + Disagreements)</div>
-  <div class="stat-secondary">Agreements: {total if total is not None else "&mdash;"}
-    ({ag.get("positive", "&mdash;")} pos / {ag.get("negative", "&mdash;")} neg)</div>
-  <div class="stat-secondary">Disagreements: {da.get("positive", "&mdash;")} pos / {da.get("negative", "&mdash;")} neg</div>
-</div>"""
-
 
 # ---------------------------------------------------------------- HTML ----
 
@@ -692,11 +723,11 @@ def render_html(report: RunReport) -> str:
     core, additional = _core_and_additional(report)
 
     stat_cards = "".join([
-        _doc_counts_stat_html(report.doc_counts),
-        _mce_stat_html((report.stats or {}).get("mce_coverage", {})),
+        _doc_counts_and_mce_html(report.doc_counts, (report.stats or {}).get("mce_coverage", {})),
         _document_length_stat_html((report.stats or {}).get("document_length", {})),
         _label_distribution_stat_html((report.stats or {}).get("label_distribution", {})),
         _corpus_breakdown_stat_html((report.stats or {}).get("corpus_breakdown", {})),
+        _composition_section_html((report.stats or {}).get("composition", {})),
         _business_context_spread_html((report.stats or {}).get("composition", {})),
     ])
 
@@ -714,13 +745,17 @@ def render_html(report: RunReport) -> str:
   .verdict {{ display: inline-block; padding: 0.45rem 0.9rem; border-radius: 6px; font-weight: 600;
               margin-bottom: 1rem; font-size: 0.85rem; }}
   .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                gap: 12px; margin-bottom: 1.3rem; align-items: stretch; }}
-  .stat-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 12px 14px; }}
+                gap: 12px; margin-bottom: 1.3rem; align-items: start; }}
+  .stat-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
   .stat-card-wide {{ grid-column: span 2; min-width: 320px; }}
+  .stat-card-widest {{ grid-column: span 3; min-width: 480px; }}
   .stat-label {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
                  color: {MUTED}; margin-bottom: 6px; }}
   .stat-primary {{ font-size: 1.35rem; font-weight: 700; color: {ACCENT}; }}
   .stat-secondary {{ font-size: 0.78rem; color: {MUTED}; margin-top: 2px; }}
+  .stat-count {{ font-weight: 700; color: {ACCENT}; }}
+  .doc-mce-card {{ display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }}
+  .doc-mce-col {{ flex: 1 1 240px; min-width: 240px; }}
   .donut {{ border-radius: 50%; flex: 0 0 auto; display: flex; align-items: center;
             justify-content: center; }}
   .donut-hole {{ width: 68%; height: 68%; border-radius: 50%; background: #ffffff;
@@ -755,23 +790,18 @@ def render_html(report: RunReport) -> str:
                 padding: 4px 12px; font-size: 0.76rem; display: flex; gap: 6px; align-items: baseline; }}
   .info-chip-label {{ color: {MUTED}; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.65rem; }}
   .info-chip-value {{ color: {ACCENT}; font-weight: 700; }}
-  .comp-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-                gap: 12px; margin-top: 0.6rem; }}
-  .comp-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 12px; }}
-  .comp-row {{ display: flex; align-items: center; gap: 7px; margin: 3px 0; }}
-  .comp-name {{ width: 42%; flex: 0 0 auto; font-size: 0.74rem; color: {MUTED};
-                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-  .comp-value {{ width: 82px; flex: 0 0 auto; font-size: 0.74rem; color: {INK}; text-align: right; }}
   .comp-legend {{ list-style: none; margin: 0; padding: 0; font-size: 0.74rem; flex: 1 1 auto; min-width: 140px; }}
   .comp-legend li {{ margin: 3px 0; }}
   .legend-swatch {{ display: inline-block; width: 10px; height: 10px; margin-right: 6px;
                      border-radius: 2px; vertical-align: middle; }}
-  details.show-all {{ margin-top: 6px; }}
   details.show-all summary {{ cursor: pointer; font-size: 0.72rem; color: {ACCENT};
     padding: 2px 0; user-select: none; }}
   .show-all-table {{ font-size: 0.72rem; margin: 4px 0 0; max-height: 220px;
                       display: block; overflow-y: auto; }}
   .show-all-table th, .show-all-table td {{ padding: 0.2rem 0.4rem; }}
+  .format-layout {{ display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }}
+  .format-donut-col {{ display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }}
+  .format-table-col {{ flex: 1 1 220px; min-width: 220px; }}
   table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.3rem; table-layout: fixed; }}
   th, td {{ border: 1px solid {BORDER}; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.82rem;
             vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }}
@@ -780,10 +810,6 @@ def render_html(report: RunReport) -> str:
   .fix {{ color: {ACCENT}; font-size: 0.78rem; margin-top: 0.3rem; }}
   .examples {{ margin: 0.25rem 0 0.15rem 0; padding-left: 1.1rem; font-size: 0.8rem; }}
   .examples li {{ margin: 0.1rem 0; }}
-  details.passed-block {{ margin-top: 0.5rem; }}
-  details.passed-block summary {{ cursor: pointer; font-size: 0.82rem; color: {MUTED};
-    padding: 0.3rem 0; user-select: none; }}
-  details.passed-block summary:hover {{ color: {INK}; }}
   .row-scope {{ color: {MUTED}; font-size: 0.72rem; font-weight: 400; }}
   /* Fix cards - one per distinct failing check, minimal "what/do" layout */
   .fix-section {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 1.1rem; }}
@@ -863,8 +889,6 @@ def render_html(report: RunReport) -> str:
 {_fix_list_html(core, additional)}
 
 <div class="stat-grid">{stat_cards}</div>
-
-{_composition_section_html((report.stats or {}).get("composition", {}))}
 
 {_quality_metrics_section_html(report.quality_metrics)}
 
@@ -1087,26 +1111,38 @@ def render_pdf(report: RunReport) -> bytes:
         pdf.ln(1)
 
     composition = (report.stats or {}).get("composition") or {}
-    if composition:
+    format_data = composition.get(_DONUT_CATEGORY_KEY)
+    if format_data and format_data.get("top"):
         pdf.set_font("Helvetica", "B", 13)
-        pdf.multi_cell(0, 7, "Document composition - most common counts",
-                        new_x="LMARGIN", new_y="NEXT")
-        for key, title in _COMPOSITION_TITLES.items():
-            data = composition.get(key)
-            if not data or not data.get("top"):
-                continue
-            pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(0, 5, _clean(title), new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("Helvetica", "", 9)
-            max_count = max((c for _v, c, _p in data["top"]), default=0) or 1
-            pdf.set_fill_color(31, 58, 95)
-            for value, count, pct in data["top"]:
-                x, y = pdf.get_x(), pdf.get_y()
-                pdf.cell(45, 4.2, _clean(_truncate(str(value), 40)))
-                pdf.rect(x + 45, y, 70 * count / max_count, 4.2, style="F")
-                pdf.set_xy(x + 45 + 72, y)
-                pdf.cell(0, 4.2, f"{count} ({pct:.1f}%)", new_x="LMARGIN", new_y="NEXT")
-            pdf.ln(1)
+        pdf.multi_cell(0, 7, "File format", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+        all_values = format_data.get("all", format_data["top"])
+        max_count = max((c for _v, c, _p in all_values), default=0) or 1
+        pdf.set_fill_color(31, 58, 95)
+        for value, count, pct in all_values:
+            x, y = pdf.get_x(), pdf.get_y()
+            pdf.cell(45, 4.2, _clean(_truncate(str(value), 40)))
+            pdf.rect(x + 45, y, 70 * count / max_count, 4.2, style="F")
+            pdf.set_xy(x + 45 + 72, y)
+            pdf.cell(0, 4.2, f"{count} ({pct:.1f}%)", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+
+    bc_rows = []
+    for key, label in _BUSINESS_CONTEXT_LABELS.items():
+        data = composition.get(key)
+        all_values = data.get("all") if data else None
+        if not all_values:
+            continue
+        distinct = data["distinct"]
+        bc_rows.append((label, distinct, all_values[-1][2], all_values[0][2], 100.0 / distinct))
+    if bc_rows:
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.multi_cell(0, 7, "Business Context Spread", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", "", 9)
+        for label, distinct, min_pct, max_pct, even_pct in bc_rows:
+            pdf.multi_cell(0, 4.5, _clean(
+                f"{label}: {distinct} value(s), share {min_pct:.1f}-{max_pct:.1f}% (even = {even_pct:.1f}%)"
+            ), new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
 
     def _checklist_block(label: str, groups) -> None:
