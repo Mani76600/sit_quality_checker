@@ -826,7 +826,11 @@ def _fail_group_html(title: str, items: list) -> str:
         lead = lead.rstrip().rstrip(",")
         fact_full = lead or title
         fact = html.escape(_simplify_fact(fact_full, limit=150))
-        scope_bit = f'<span class="row-scope">{html.escape(r.scope)}:</span> ' if r.scope and len(items) > 1 else ""
+        # Always shown when present, even for a single-item group - matches
+        # the Fix list's own rule (see _fix_list_html) and answers "where is
+        # this even coming from" every time, not only when there's more than
+        # one scope to tell apart.
+        scope_bit = f'<span class="row-scope">{html.escape(r.scope)}:</span> ' if r.scope else ""
         # title= carries the untruncated fact, so a line that does get
         # shortened (a rare, genuinely long fact - several distinct numbers/
         # file names at once) is still fully readable on hover, not cut off

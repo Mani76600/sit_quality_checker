@@ -150,8 +150,10 @@ def _result_table_html(results) -> str:
             lead = lead.rstrip().rstrip(",")
             fact_full = lead or title
             fact = _html.escape(_simplify_fact(fact_full, limit=150))
+            # Always shown when present, even for a single-item group -
+            # matches the Fix list's own rule (see _fix_list_html).
             scope_bit = (f'<span class="qc-row-scope">{_html.escape(r.scope)}:</span> '
-                         if r.scope and len(items) > 1 else "")
+                         if r.scope else "")
             # title= carries the untruncated fact, so a rare long one is
             # still fully readable on hover, never cut off for good.
             fact_lines.append(f'<div title="{_html.escape(_truncate(fact_full))}">{scope_bit}{fact}</div>')
