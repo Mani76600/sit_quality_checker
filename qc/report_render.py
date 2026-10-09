@@ -348,16 +348,35 @@ def _metric_fix_rows(quality_metrics: dict) -> list[tuple[str, str, str, str]]:
     return rows
 
 
+_CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
+
+
+def _short_fix_phrase(action: str, limit: int = 56) -> str:
+    """As few words as it takes to stay a clear, standalone instruction -
+    not a hard "3-4 words" rule, since our suggested-fix text is built
+    around real field/file names (e.g. "normalized_context.ground_truth.
+    true") that can't be shortened without losing which field is wrong.
+    Drops everything after the first " - " (every check's fix text puts
+    the justification clause there, e.g. "Reconcile X with Y - they must
+    describe the same document set" -> "Reconcile X with Y"), then falls
+    back to a hard character truncation only if that's still long."""
+    text = (action or "").strip()
+    m = _CLAUSE_BREAK_RE.search(text)
+    if m:
+        text = text[:m.start()].strip()
+    return _truncate_short(text, limit)
+
+
 def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str:
-    """One compact row per issue - a severity tag, a crisp one-line "what's
-    wrong" (hard-truncated to a single line via CSS ellipsis, full text in
-    a hover title=...), and an equally crisp one-line fix action. Replaces
-    the older multi-line what/do card: at real-report scale a reader wants
-    to scan a short punch list, not read a paragraph per issue - the full
-    detail (examples, scope, pass rate) is still one click away in the
-    checklist. Covers both failing checklist checks (tagged QC) and
-    Weak/Critical quality metrics (tagged WEAK/CRITICAL), since both are
-    genuine "fix this" items even though only a gated-critical metric
+    """One compact row per issue - a severity tag plus a single short,
+    actionable line (what to actually do), hard-truncated to one line via
+    CSS ellipsis with the full problem + fix text available on hover. No
+    separate "what's wrong" column: at real-report scale a reader wants a
+    short punch list to scan, not two columns of prose per issue - the
+    full detail (examples, scope, pass rate) is still one click away in
+    the checklist below. Covers both failing checklist checks (tagged QC)
+    and Weak/Critical quality metrics (tagged WEAK/CRITICAL), since both
+    are genuine "fix this" items even though only a gated-critical metric
     flips the overall verdict."""
     cat_results = {category: results for category, results in core + additional}
     groups: dict[tuple[str, str], list] = {}
@@ -385,8 +404,8 @@ def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str
 
     row_html = "".join(
         f'<div class="fixrow"><span class="tag {cls}">{tag}</span>'
-        f'<span class="fr-what" title="{html.escape(what)}">{html.escape(what)}</span>'
-        f'<span class="fr-do" title="{html.escape(do)}">{html.escape(do)}</span></div>'
+        f'<span class="fr-action" title="{html.escape(_truncate(what))} &mdash; {html.escape(_truncate(do))}">'
+        f'{html.escape(_short_fix_phrase(do))}</span></div>'
         for tag, cls, what, do in rows
     )
     return f'<div class="card"><div class="cardhead head"><h2>Fix these {len(rows)}</h2></div>{row_html}</div>'
@@ -891,10 +910,9 @@ h2{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut
   padding:3px 6px;border-radius:5px;white-space:nowrap;text-align:center}
 .t-crit{background:var(--crit-bg);color:var(--crit)}
 .t-weak{background:var(--weak-bg);color:var(--weak)}
-.fixrow{display:grid;grid-template-columns:58px minmax(0,1fr) minmax(0,1fr);gap:6px 12px;
+.fixrow{display:grid;grid-template-columns:58px minmax(0,1fr);gap:10px;
   align-items:center;padding:5px 11px;border-top:1px solid var(--line)}
-.fr-what{font-weight:700;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.fr-do{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr-action{font-weight:600;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .two{display:flex;flex-direction:column;gap:7px}
 .three{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr) minmax(0,4fr);gap:7px;align-items:stretch}

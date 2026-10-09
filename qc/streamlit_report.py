@@ -18,7 +18,8 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
     _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
-    _quality_metrics_section_html, _truncate, _truncate_short, _verdict_text, render_html, render_pdf,
+    _metric_fix_rows, _quality_metrics_section_html, _short_fix_phrase, _truncate, _truncate_short,
+    _verdict_text, render_html, render_pdf,
 )
 
 def _inject_metric_css() -> None:
@@ -177,14 +178,20 @@ def _corpus_breakdown_html(cb: dict) -> str:
     )
 
 
-def _fix_list_html(grouped: dict, categories: list[str]) -> str:
-    """One minimal card per distinct (category, check) that's failing - a
-    bold headline ("what") with a small muted subline of concrete numbers,
-    and a bold suggested action ("do") with a small muted subline naming
-    the category and its pass rate. Every FAIL for the same check across
-    scopes (Agreements/Positive, Agreements/Negative, ...) collapses into
-    one card - the Streamlit-rendered twin of report_render.py's own
-    _fix_list_html."""
+_TAG_COLORS = {"t-crit": "#cf222e", "t-weak": "#9a6700"}
+_TAG_BG = {"t-crit": "rgba(207,34,46,0.12)", "t-weak": "rgba(154,103,0,0.14)"}
+
+
+def _fix_list_html(grouped: dict, categories: list[str], quality_metrics: dict | None = None) -> str:
+    """One compact row per issue - a severity tag (QC / WEAK / CRITICAL)
+    plus a single short, actionable line, hard-truncated to one line via
+    CSS ellipsis with the full problem + fix text on hover. No separate
+    "what's wrong" column - a reader wants a short punch list to scan, not
+    two columns of prose per issue; the full detail is still one click
+    away in the checklist below. The Streamlit-rendered twin of
+    report_render.py's own _fix_list_html (same row logic, reused
+    directly, just emitted as inline-styled HTML instead of CSS classes
+    since this is injected straight into the Streamlit page)."""
     import html as _html
     groups: dict[tuple[str, str], list] = {}
     order: list[tuple[str, str]] = []
@@ -197,45 +204,35 @@ def _fix_list_html(grouped: dict, categories: list[str]) -> str:
                 groups[key] = []
                 order.append(key)
             groups[key].append(r)
-    if not groups:
-        return ""
 
-    rows = []
+    rows: list[tuple[str, str, str, str]] = []
     for category, title in order:
         items = groups[(category, title)]
         first = items[0]
         lead, _examples = split_detail(first.detail)
-        scopes = sorted({r.scope for r in items if r.scope})
-        if len(scopes) > 1:
-            scope_bit = f"{len(items)} scope(s)"
-        elif scopes:
-            scope_bit = _html.escape(scopes[0])
-        else:
-            scope_bit = ""
-        cat_results = grouped[category]
-        cat_total = len(cat_results)
-        cat_passed = cat_total - sum(1 for r in cat_results if r.status == Status.FAIL)
-        # Direct, concrete wording first (the actual numbers/fact), with the
-        # technical check name demoted to a small subline.
-        what_sub = _html.escape(_truncate_short(title, 80))
-        if scope_bit:
-            what_sub += f" &middot; {scope_bit}"
-        do_text = _html.escape(_truncate_short(first.fix, 90)) if first.fix else "&mdash;"
-        rows.append(
-            '<div style="background:rgba(128,128,128,0.06);border-left:4px solid '
-            f'{RED};border-radius:6px;padding:8px 12px;margin:5px 0;display:grid;'
-            'grid-template-columns:70px minmax(0,1fr) minmax(0,1fr);gap:4px 18px;align-items:center;">'
-            f'<span style="font-size:0.68rem;letter-spacing:0.05em;text-transform:uppercase;'
-            f'font-weight:700;color:{RED};">Fix this</span>'
-            f'<span style="font-weight:700;font-size:0.85rem;">{_html.escape(_truncate_short(lead, 90))}'
-            f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
-            f'{what_sub}</small></span>'
-            f'<span style="font-weight:700;font-size:0.82rem;color:{ACCENT};">{do_text}'
-            f'<small style="display:block;font-weight:400;font-size:0.74rem;opacity:0.7;">'
-            f'{_html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>'
+        lead = lead.rstrip().rstrip(",")
+        rows.append(("QC", "t-crit", lead or title, first.fix or "See the checklist for detail."))
+    rows.extend(_metric_fix_rows(quality_metrics or {}))
+    if not rows:
+        return ""
+
+    row_html = [f'<div style="font-size:0.95rem;font-weight:700;margin:0.3rem 0 0.2rem;">'
+                f'Fix these {len(rows)}</div>']
+    for tag, cls, what, do in rows:
+        color = _TAG_COLORS.get(cls, RED)
+        bg = _TAG_BG.get(cls, "rgba(207,34,46,0.12)")
+        title_attr = _html.escape(f"{_truncate(what)} — {_truncate(do)}")
+        row_html.append(
+            '<div style="display:grid;grid-template-columns:58px minmax(0,1fr);gap:10px;'
+            f'align-items:center;padding:5px 2px;border-top:1px solid rgba(128,128,128,0.2);">'
+            f'<span style="display:inline-block;font-size:0.6rem;font-weight:700;letter-spacing:0.03em;'
+            f'text-transform:uppercase;padding:3px 6px;border-radius:5px;text-align:center;'
+            f'background:{bg};color:{color};">{tag}</span>'
+            f'<span title="{title_attr}" style="font-weight:600;font-size:0.8rem;white-space:nowrap;'
+            f'overflow:hidden;text-overflow:ellipsis;">{_html.escape(_short_fix_phrase(do))}</span>'
             "</div>"
         )
-    return "".join(rows)
+    return "".join(row_html)
 
 
 def _checklist_html(grouped: dict, categories: list[str], cat_anchor: dict, label: str) -> str:
@@ -625,7 +622,7 @@ def render_report(report: RunReport) -> None:
     )
     if gates_html:
         st.markdown(gates_html, unsafe_allow_html=True)
-    fix_list_html = _fix_list_html(grouped, all_categories)
+    fix_list_html = _fix_list_html(grouped, all_categories, report.quality_metrics)
     if fix_list_html:
         st.markdown(fix_list_html, unsafe_allow_html=True)
 
