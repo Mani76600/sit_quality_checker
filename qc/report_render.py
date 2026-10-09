@@ -365,12 +365,10 @@ _CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
 # narration; only the verb "claims" is noise.
 _FACT_CLEANUP = [
     (re.compile(r"^(\S+\.(?:json|jsonl))\s+claims\s+", re.IGNORECASE), r"\1: "),
-    # "counts.positive=5625 but 5900 files..." -> "counts.positive: claimed
-    # 5625, actual 5900 files..." - without this, "5625 ≠ 5900" alone
-    # doesn't say which number is the claim and which is reality; spelling
-    # out "claimed"/"actual" makes that unambiguous at a glance.
-    (re.compile(r"\b([\w.]+)=([\d,]+)\s+but\s+([\d,]+)\s+"), r"\1: claimed \2, actual \3 "),
-
+    # "counts.positive=5625 but 5900 files..." -> "...=5625 ≠ 5900 files..." -
+    # a mismatch between two numbers reads as a mismatch at a glance with
+    # "!=" instead of the word "but", which doesn't say which way it's wrong.
+    (re.compile(r"(=[\d,]+)\s+but\s+(?=[\d,]+\b)"), "\\1 ≠ "),
     (re.compile(r"\bfile\(s\)", re.IGNORECASE), "files"),
     (re.compile(r"\brow\(s\)", re.IGNORECASE), "rows"),
     (re.compile(r"\bvalue\(s\)", re.IGNORECASE), "values"),
@@ -441,7 +439,20 @@ def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str
         lead, _examples = split_detail(first.detail)
         lead = lead.rstrip().rstrip(",")
         fix = first.fix or "See the checklist for detail."
-        rows.append(("QC", "t-crit", _simplify_fact(lead or title), f"{lead or title} — {fix}"))
+        # Which scope (Agreements/Disagreements, Positive/Negative, ...)
+        # this fact is from - collapsing every scope into one line loses
+        # that otherwise, and a bare count/delta with no scope reads as
+        # "where is this even coming from?".
+        scopes = sorted({r.scope for r in items if r.scope})
+        if len(scopes) > 1:
+            scope_bit = f"{len(items)} scopes"
+        elif scopes:
+            scope_bit = scopes[0]
+        else:
+            scope_bit = ""
+        fact = _simplify_fact(lead or title)
+        display = f"{scope_bit}: {fact}" if scope_bit else fact
+        rows.append(("QC", "t-crit", display, f"{lead or title} — {fix}"))
     for tag, cls, what, do in _metric_fix_rows(quality_metrics or {}):
         rows.append((tag, cls, do, f"{what} — {do}"))
     if not rows:

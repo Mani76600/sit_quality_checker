@@ -242,7 +242,20 @@ def _fix_list_html(grouped: dict, categories: list[str], quality_metrics: dict |
         lead, _examples = split_detail(first.detail)
         lead = lead.rstrip().rstrip(",")
         fix = first.fix or "See the checklist for detail."
-        rows.append(("QC", "t-crit", _simplify_fact(lead or title), f"{lead or title} — {fix}"))
+        # Which scope (Agreements/Disagreements, Positive/Negative, ...)
+        # this fact is from - collapsing every scope into one line loses
+        # that otherwise, and a bare count/delta with no scope reads as
+        # "where is this even coming from?".
+        scopes = sorted({r.scope for r in items if r.scope})
+        if len(scopes) > 1:
+            scope_bit = f"{len(items)} scopes"
+        elif scopes:
+            scope_bit = scopes[0]
+        else:
+            scope_bit = ""
+        fact = _simplify_fact(lead or title)
+        display = f"{scope_bit}: {fact}" if scope_bit else fact
+        rows.append(("QC", "t-crit", display, f"{lead or title} — {fix}"))
     for tag, cls, what, do in _metric_fix_rows(quality_metrics or {}):
         rows.append((tag, cls, do, f"{what} — {do}"))
     if not rows:
