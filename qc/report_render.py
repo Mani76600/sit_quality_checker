@@ -2,18 +2,17 @@
 alongside the existing raw JSON export, for reviewing/circulating results
 outside the Streamlit app itself.
 
-Design: only two status colors anywhere in the page - green for PASS,
-red for FAIL (WARN/INFO are folded into PASS, so there's nothing else to
-color). Neutral navy/gray is used only for structural chrome (headings,
-borders), never to mean "status". The checklist table drops raw pass
-counts ("34/34 passed" reads as noise once color already answers "did this
-pass") in favor of a single plain-language line. Headline numbers lead with
-real visualizations instead of plain text: a donut for overall MCE
-detection coverage, split green/red bars per polarity, and a simple bar
-chart for the easy/hard x positive/negative distribution - the same
-reasoning behind the stat cards (doc counts / MCE coverage / label
-distribution) shown at the top of the Streamlit report, now also in the
-static HTML/PDF export, which previously didn't carry them at all.
+Visual design (HTML/PDF export only - see qc/streamlit_report.py for the
+live in-app view): a dense, single-column-of-cards "dashboard" layout - a
+navy verdict band up top, three glanceable gate cards (QC checks / Quality
+Metrics / MCE Detection), one minimal "what/do" fix card per distinct
+failing check, then compact data cards (quality metrics ladder table,
+accepted-by-class table, document length histogram, file format bars,
+business context spread) and a final compact checklist card. Only two
+status colors anywhere - green/navy for pass, red for fail - everything
+else is neutral chrome. The page is sized to print cleanly on A4 (see the
+`@page`/`@media print` rules below) rather than an arbitrary web-page
+width.
 """
 
 from __future__ import annotations
@@ -25,13 +24,20 @@ from qc.check_groups import ADDITIONAL_CHECK_CATEGORIES, ADDITIONAL_CHECKS_SECTI
 from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 
-GREEN = "#1a7f37"
-RED = "#cf222e"
-ACCENT = "#1f3a5f"  # structural chrome only (headings) - never a status color
-INK = "#1e2530"
-MUTED = "#6b7280"
-BORDER = "#e5e7eb"
-PANEL = "#f6f7fb"
+# Literal hex (not CSS var() strings) on purpose: these constants are also
+# inlined directly into HTML this module hands to qc/streamlit_report.py
+# (_quality_metrics_section_html, _business_context_spread_html,
+# _gates_summary_html), which is rendered inside Streamlit's own page -
+# a page that never defines the `--strong`/`--crit`/... custom properties
+# the new <style> block below sets up, so var() references would resolve
+# to nothing there. Values match this file's new --strong/--crit/... tokens.
+GREEN = "#1a7046"
+RED = "#a82424"
+ACCENT = "#1f3a68"  # structural chrome only (headings, big numbers) - never a status color
+INK = "#14213d"
+MUTED = "#56637d"
+BORDER = "#d5dce8"
+PANEL = "#ffffff"
 
 # A handful of checks (e.g. content_verification.py's value-in-context
 # examples) build a detail string by joining several real document excerpts
@@ -138,332 +144,175 @@ def _verdict_text(n_fail: int, gated_critical: list[str]) -> tuple[str, str, boo
     return "Not ready to ship", " · ".join(bits), True
 
 
-# ------------------------------------------------------------ HTML charts --
-
-def _donut_svg(pct: float | None, size: int = 92, stroke: int = 12) -> str:
-    """A ring split green (detected share) / red (missing share) via
-    conic-gradient - CSS-only, no JS/images, so it survives as a plain
-    double-clickable HTML file. pct is None (nothing checked) -> a flat
-    gray ring with no label."""
-    if pct is None:
-        return (f'<div class="donut" style="background: conic-gradient({BORDER} 0% 100%); '
-                 f'width:{size}px;height:{size}px;">'
-                 f'<div class="donut-hole">n/a</div></div>')
-    color = GREEN if pct >= 99.999 else RED
-    return (f'<div class="donut" style="background: conic-gradient('
-            f'{GREEN} 0% {pct:.1f}%, {RED} {pct:.1f}% 100%); '
-            f'width:{size}px;height:{size}px;">'
-            f'<div class="donut-hole" style="color:{color}">{pct:.1f}%</div></div>')
+def _split_label(label: str) -> tuple[str, str]:
+    """report.label is built as "<Title> / Version_YYYYMMDD_HHMM" (or
+    "<Title> / <Language> / Version_...") - the band header shows the
+    title as the page's <h1> and the trailing "Version_..." part as a
+    small mono chip next to it, matching the reference dashboards' own
+    title/version split."""
+    if " / " in label:
+        title, _, version = label.rpartition(" / ")
+        return title, version
+    return label, ""
 
 
-def _split_bar_html(pct: float | None) -> str:
-    """A thin horizontal track, green fill for the detected share, the
-    remainder left as the plain track background (no red fill at 100%,
-    since there's nothing to call out)."""
-    if pct is None:
-        return f'<div class="bar-track"><div class="bar-fill" style="width:0%;background:{BORDER}"></div></div>'
-    color = GREEN if pct >= 99.999 else RED
-    return f'<div class="bar-track"><div class="bar-fill" style="width:{pct:.1f}%;background:{color}"></div></div>'
+# ------------------------------------------------------------- band/hero --
 
-
-def _doc_counts_and_mce_html(dc: dict, mce: dict) -> str:
-    """Documents + MCE Detection Coverage merged into one wide card (two
-    columns) - these were two separate cards that always appeared side by
-    side anyway, so merging them into one reads as a single glance instead
-    of two. Every count in the Documents column is bolded/colored (not just
-    the big total), since the pos/neg breakdown numbers are exactly the
-    kind of thing a reader scans for first."""
-    has_mce = bool(mce and mce.get("checked"))
-    if not dc and not has_mce:
-        return ""
-
-    docs_col = ""
-    if dc:
-        ag, da = dc.get("agreements", {}) or {}, dc.get("disagreements", {}) or {}
-        combined = dc.get("combined_total")
-        total = dc.get("total")
-        docs_col = f"""
-    <div class="doc-mce-col">
-      <div class="stat-label">Documents</div>
-      <div class="stat-primary">{combined if combined is not None else "&mdash;"}</div>
-      <div class="stat-secondary">total (Agreements + Disagreements)</div>
-      <div class="stat-secondary">Agreements: <span class="stat-count">{total if total is not None else "&mdash;"}</span>
-        (<span class="stat-count">{ag.get("positive", "&mdash;")}</span> pos / <span class="stat-count">{ag.get("negative", "&mdash;")}</span> neg)</div>
-      <div class="stat-secondary">Disagreements: <span class="stat-count">{da.get("positive", "&mdash;")}</span> pos / <span class="stat-count">{da.get("negative", "&mdash;")}</span> neg</div>
-    </div>"""
-
-    mce_col = ""
-    if has_mce:
-        pos, neg = mce.get("positive", {}), mce.get("negative", {})
-        mce_col = f"""
-    <div class="doc-mce-col">
-      <div class="stat-label">MCE detection coverage</div>
-      <div class="mce-layout">
-        {_donut_svg(mce.get("pct"))}
-        <div class="mce-bars">
-          <div class="mce-bar-row">
-            <span class="mce-bar-label">Positive</span>
-            {_split_bar_html(pos.get("pct"))}
-            <span class="mce-bar-value"><span class="stat-count">{_pct_str(pos.get("pct"))}</span> ({pos.get("detected", 0)}/{pos.get("checked", 0)})</span>
-          </div>
-          <div class="mce-bar-row">
-            <span class="mce-bar-label">Negative</span>
-            {_split_bar_html(neg.get("pct"))}
-            <span class="mce-bar-value"><span class="stat-count">{_pct_str(neg.get("pct"))}</span> ({neg.get("detected", 0)}/{neg.get("checked", 0)})</span>
-          </div>
-          <div class="stat-secondary"><span class="stat-count">{mce.get("detected", 0)}</span> / {mce.get("checked", 0)} total documents detected</div>
-        </div>
-      </div>
-    </div>"""
-
-    return f'<div class="stat-card stat-card-widest doc-mce-card">{docs_col}{mce_col}</div>'
-
-
-def _label_distribution_stat_html(dist: dict) -> str:
-    if not dist or not dist.get("total"):
-        return ""
-    labels = [
-        ("Easy positive", dist.get("easy positive", 0)),
-        ("Hard positive", dist.get("hard positive", 0)),
-        ("Easy negative", dist.get("easy negative", 0)),
-        ("Hard negative", dist.get("hard negative", 0)),
-    ]
-    dist_total = dist.get("total", 0) or 1
-    max_count = max((c for _, c in labels), default=0) or 1
-    rows = "".join(
-        f'<div class="dist-row"><span class="dist-name">{name}</span>'
-        f'<div class="bar-track"><div class="bar-fill" style="width:{c / max_count * 100:.1f}%;'
-        f'background:{ACCENT}"></div></div>'
-        f'<span class="dist-value">{c} ({c / dist_total * 100:.1f}%)</span></div>'
-        for name, c in labels
-    )
-    unknown = dist.get("unknown", 0)
-    footer = f'<div class="stat-secondary">unknown: {unknown}</div>' if unknown else ""
+def _band_header_html(report: RunReport, headline: str, subline: str, is_failing: bool) -> str:
+    title, version = _split_label(report.label)
+    info = report.generation_info or {}
+    meta_bits = []
+    if version:
+        meta_bits.append(f'<span class="mono">{html.escape(version)}</span>')
+    if info.get("language_code"):
+        meta_bits.append(
+            f'<span>{html.escape(info["language_code"].upper())} &middot; '
+            f'{html.escape(info.get("language_name", info["language_code"]))}</span>'
+        )
+    meta = f'<div class="meta">{"".join(meta_bits)}</div>' if meta_bits else ""
+    verdict_bg = "var(--crit-bg)" if is_failing else "var(--strong-bg)"
+    verdict_fg = "var(--crit)" if is_failing else "var(--strong)"
     return f"""
-<div class="stat-card stat-card-wide">
-  <div class="stat-label">Easy / Hard &times; Positive / Negative</div>
-  <div class="dist-grid">{rows}</div>
-  <div class="stat-secondary">total: {dist.get("total", 0)}</div>{footer}
-</div>"""
+<header class="band">
+  <div>
+    <div class="label">SIT output quality report</div>
+    <h1>{html.escape(title)}</h1>
+    {meta}
+  </div>
+  <div class="verdict" style="background:{verdict_bg};color:{verdict_fg};">
+    <b>{html.escape(headline)}</b><span>{html.escape(subline)}</span>
+  </div>
+</header>"""
 
 
-def _document_length_stat_html(dl: dict) -> str:
-    if not dl or not dl.get("total"):
+def _hero_card_html(dc: dict) -> str:
+    if not dc:
         return ""
-    histogram = dl.get("histogram") or []
-    max_count = max((c for _s, _e, c in histogram), default=0) or 1
-    bars = "".join(
-        f'<div class="doclen-bar" style="height:{c / max_count * 100:.1f}%" '
-        f'title="{s}-{e}: {c} document(s)"></div>'
-        for s, e, c in histogram
-    )
-    overflow = dl.get("overflow", 0)
-    if overflow:
-        bars += (f'<div class="doclen-bar doclen-bar-overflow" style="height:100%" '
-                  f'title="{dl.get("overflow_from", "?")}+: {overflow} document(s)"></div>')
-    axis_min = histogram[0][0] if histogram else dl.get("min", 0)
-    axis_max = histogram[-1][1] if histogram else dl.get("max", 0)
-    median = dl.get("median", 0)
-    median_str = f"{median:,.0f}" if isinstance(median, float) else f"{median:,}"
+    ag, da = dc.get("agreements", {}) or {}, dc.get("disagreements", {}) or {}
+    combined_total = dc.get("combined_total") or 0
+    accepted_total = dc.get("total") or 0
+    ag_pos, ag_neg = ag.get("positive", 0) or 0, ag.get("negative", 0) or 0
+    da_pos, da_neg = da.get("positive", 0) or 0, da.get("negative", 0) or 0
+    gen_pos, gen_neg = ag_pos + da_pos, ag_neg + da_neg
+    disagreed_total = da_pos + da_neg
+    rate = (accepted_total / combined_total * 100.0) if combined_total else None
+    rate_str = f"{rate:.1f}" if rate is not None else "n/a"
+    bar_width = min(rate, 100.0) if rate is not None else 0.0
     return f"""
-<div class="stat-card stat-card-wide">
-  <div class="stat-label">Document Length</div>
-  <div class="stat-secondary">Character count distribution across the corpus</div>
-  <div class="doclen-layout">
-    <div class="doclen-chart">
-      <div class="doclen-bars">{bars}</div>
-      <div class="doclen-axis"><span>{axis_min:,}</span><span>{axis_max:,}{"+" if overflow else ""}</span></div>
-    </div>
-    <div class="doclen-stats">
-      <div class="mini-stat"><div class="stat-secondary">Min</div><div class="stat-primary">{dl.get("min", 0):,}</div></div>
-      <div class="mini-stat"><div class="stat-secondary">Median</div><div class="stat-primary">{median_str}</div></div>
-      <div class="mini-stat"><div class="stat-secondary">Max</div><div class="stat-primary">{dl.get("max", 0):,}</div></div>
-    </div>
+<div class="card hero">
+  <div class="hero-main"><b>{accepted_total:,}</b><span>Accepted</span></div>
+  <div class="hero-split">
+    <div><b>{ag_pos:,}</b><span>Positive &middot; of {gen_pos:,}</span></div>
+    <div><b>{ag_neg:,}</b><span>Negative &middot; of {gen_neg:,}</span></div>
+  </div>
+  <div class="hero-foot">
+    <div class="bar"><i style="width:{bar_width:.2f}%"></i></div>
+    <div class="t"><span><b>{rate_str}%</b> of {combined_total:,} generated</span>
+    <span><b>{disagreed_total:,}</b> disagreed ({da_pos:,} pos &middot; {da_neg:,} neg)</span></div>
   </div>
 </div>"""
 
 
-def _generation_info_html(info: dict) -> str:
+def _pipeline_card_html(info: dict) -> str:
     if not info:
         return ""
-    chips = []
-    generator = info.get("generator_model")
-    if generator:
-        version_bit = f" ({info['generator_model_version']})" if info.get("generator_model_version") else ""
-        chips.append(("Model", f"{generator}{version_bit}"))
-    if info.get("language_code"):
-        chips.append(("Language", f"{info['language_code'].upper()} - {info.get('language_name', info['language_code'])}"))
+    comps = []
+    if info.get("generator_model"):
+        version_bit = (f'<small>{html.escape(str(info["generator_model_version"]))}</small>'
+                       if info.get("generator_model_version") else "")
+        comps.append((f'{html.escape(info["generator_model"])}{version_bit}', "Doc generation model"))
     if info.get("sit_grader_model"):
-        chips.append(("SIT Grader", info["sit_grader_model"]))
-    if info.get("docparser_version"):
-        chips.append(("DocParser", info["docparser_version"]))
+        comps.append((html.escape(info["sit_grader_model"]), "SIT grader model"))
     if info.get("mce_version"):
-        chips.append(("MCE", info["mce_version"]))
-    if not chips:
+        comps.append((html.escape(str(info["mce_version"])), "MCE version"))
+    if info.get("docparser_version"):
+        comps.append((html.escape(str(info["docparser_version"])), "DocParser version"))
+    if not comps:
         return ""
-    cells = "".join(
-        f'<div class="info-chip"><span class="info-chip-label">{html.escape(label)}</span>'
-        f'<span class="info-chip-value">{html.escape(str(value))}</span></div>'
-        for label, value in chips
-    )
-    return f'<div class="info-strip">{cells}</div>'
+    cells = "".join(f"<div><b>{value}</b><span>{html.escape(label)}</span></div>" for value, label in comps)
+    return f'<div class="card pad"><h2>Pipeline</h2><div class="comps">{cells}</div></div>'
 
 
-_COMPOSITION_TITLES = {
-    "format": "File format", "domain": "Domain", "department": "Department",
-    "function": "Function", "workflow": "Workflow", "process": "Process",
-    "persona": "Persona", "role": "Role", "document_type": "Document type",
-}
-# File format is a structural/technical attribute with a small, bounded set
-# of categories - a donut (share-of-whole) fits it better than the long-tail
-# bar list used for the business-context dimensions below, which routinely
-# run into dozens/hundreds of distinct values. Kept visually distinct on
-# purpose, not just for variety: these are genuinely different kinds of
-# data (one is "what proportion", the other is "what are the most common
-# values among many").
-_DONUT_CATEGORY_KEY = "format"
-_CATEGORY_PALETTE = ["#1f3a5f", "#2d5a8b", "#3978b8", "#5b9bd5", "#7fb3e0",
-                     "#21867a", "#4ca39a", "#7ec9bd"]
-_OTHER_COLOR = "#c7ced8"
+# ------------------------------------------------------------------ gates --
 
-
-def _all_values_table_html(all_values: list) -> str:
-    """Every distinct value, always visible (no collapse/expand) - a reader
-    comparing file formats wants the full list in one glance, not a
-    dead-end "+N more" label or a click-to-expand step."""
-    if not all_values:
-        return ""
-    rows = "".join(
-        f"<tr><td>{html.escape(str(value))}</td><td>{count:,}</td><td>{pct:.1f}%</td></tr>"
-        for value, count, pct in all_values
-    )
-    return (
-        '<table class="show-all-table"><tr><th>Value</th><th>Count</th><th>%</th></tr>'
-        f"{rows}</table>"
-    )
-
-
-def _category_donut_svg(top: list, other_count: int, total: int, size: int = 150) -> str:
-    stops = []
-    cursor = 0.0
-    for i, (_value, count, _pct) in enumerate(top):
-        color = _CATEGORY_PALETTE[i % len(_CATEGORY_PALETTE)]
-        share = count / total * 100.0
-        stops.append(f"{color} {cursor:.2f}% {cursor + share:.2f}%")
-        cursor += share
-    if other_count:
-        share = other_count / total * 100.0
-        stops.append(f"{_OTHER_COLOR} {cursor:.2f}% {cursor + share:.2f}%")
-        cursor += share
-    gradient = ", ".join(stops) if stops else f"{BORDER} 0% 100%"
-    return (f'<div class="donut" style="background: conic-gradient({gradient}); '
-            f'width:{size}px;height:{size}px;">'
-            f'<div class="donut-hole"><div class="stat-primary" style="font-size:1.1rem">'
-            f"{total}</div><div class=\"stat-secondary\">documents</div></div></div>")
-
-
-def _format_legend_html(top: list, other_count: int, total: int) -> str:
-    items = []
-    for i, (value, count, pct) in enumerate(top):
-        color = _CATEGORY_PALETTE[i % len(_CATEGORY_PALETTE)]
-        items.append(
-            f'<li><span class="legend-swatch" style="background:{color}"></span>'
-            f"{html.escape(str(value))}: {count} ({pct:.1f}%)</li>")
-    if other_count:
-        other_pct = other_count / total * 100.0
-        items.append(
-            f'<li><span class="legend-swatch" style="background:{_OTHER_COLOR}"></span>'
-            f"Other: {other_count} ({other_pct:.1f}%)</li>")
-    return f'<ul class="comp-legend">{"".join(items)}</ul>'
-
-
-_BUSINESS_CONTEXT_LABELS = {
-    "domain": "Domain", "department": "Department", "function": "Function",
-    "workflow": "Workflow", "process": "Process", "persona": "Persona",
-    "role": "Role", "document_type": "Document type",
+_GRADE_CHIP_CLASS = {
+    "strong": "c-s", "acceptable": "c-a", "weak": "c-w",
+    "critical": "c-crit", "report_only": "c-n", "n/a": "c-n",
 }
 
 
-def _business_context_spread_html(composition: dict) -> str:
-    """One compact row per business-context dimension - distinct value
-    count, the share range across every value (min-max %, from the full
-    "all" distribution, not just the top N), and what an evenly-split
-    distribution would look like (100/distinct). Replaces 8 separate
-    bar-chart cards (one per dimension, each with its own "show all N
-    value(s)" expand) with a single summary table - at real-report scale
-    some of these dimensions have 30-180+ distinct values, and a reader
-    checking for balance only ever needs "how many values, how skewed is
-    it", not every individual value's bar."""
-    rows = []
-    for key, label in _BUSINESS_CONTEXT_LABELS.items():
-        data = composition.get(key)
-        all_values = data.get("all") if data else None
-        if not all_values:
-            continue
-        distinct = data["distinct"]
-        min_pct = all_values[-1][2]
-        max_pct = all_values[0][2]
-        even_pct = 100.0 / distinct if distinct else 0.0
-        rows.append(
-            f"<tr><td>{html.escape(label)}</td><td><b>{distinct}</b></td>"
-            f"<td>{min_pct:.1f}&ndash;{max_pct:.1f}%</td><td>{even_pct:.1f}%</td></tr>"
+def _gates_summary_html(report: RunReport, core, additional) -> str:
+    """Three glanceable gate cards - QC Checks, Quality Metrics, MCE
+    Detection - each leading with one big bold number, shown right at the
+    top so the overall health of a run is readable without scrolling.
+    Adapted from (not copied from) the reference dashboards' "gates" row,
+    built from our own category groups / quality metrics / MCE stats
+    instead of a fixed external metric set."""
+    groups = core + additional
+    cards = []
+
+    if groups:
+        total_checks = sum(len(results) for _c, results in groups)
+        failed_checks = sum(_fail_count(results) for _c, results in groups)
+        n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
+        dots = "".join(
+            f'<span class="dot {"d-c" if _fail_count(results) else "d-s"}" '
+            f'title="{html.escape(_display_category(category))}">'
+            f'{"&#10005;" if _fail_count(results) else "&#10003;"}</span>'
+            for category, results in groups
         )
-    if not rows:
-        return ""
-    return (
-        '<div class="stat-card stat-card-wide"><div class="stat-label">Business Context Spread</div>'
-        '<table class="bc-table"><tr><th>Dimension</th><th>Values</th>'
-        "<th>Share range</th><th>If even</th></tr>" + "".join(rows) + "</table></div>"
-    )
+        pill = (f"{n_fail_groups} group(s) failed", "p-crit") if n_fail_groups else ("All passing", "p-strong")
+        cards.append(f"""
+<div class="card gate{' bad' if n_fail_groups else ''}">
+  <div class="head"><h2>QC checks</h2><span class="pill {pill[1]}">{pill[0]}</span></div>
+  <div class="gate-fig"><b>{total_checks - failed_checks:,} / {total_checks:,}</b>
+  <span>{len(groups) - n_fail_groups} of {len(groups)} groups</span></div>
+  <div class="dots">{dots}</div>
+</div>""")
 
+    qm = report.quality_metrics or {}
+    scored = [m for m in qm.values() if m.get("score") is not None]
+    if scored:
+        qm_bad = any(m.get("gate") and m.get("grade") == "critical" for m in scored)
+        graded = [m for m in scored if m.get("grade") != "report_only"]
+        report_only_n = len(scored) - len(graded)
+        sub = f"{len(graded)} / {len(graded)} graded"
+        if report_only_n:
+            sub += f" &middot; {report_only_n} report-only"
+        chips = "".join(
+            f'<span class="chip {_GRADE_CHIP_CLASS.get(m.get("grade"), "c-n")}">'
+            f'{html.escape(m["label"].split()[0])} {m["score"]:.3f}</span>'
+            for m in scored
+        )
+        cards.append(f"""
+<div class="card gate{' bad' if qm_bad else ''}">
+  <div class="head"><h2>Quality metrics</h2>
+  <span class="pill {'p-crit' if qm_bad else 'p-strong'}">{'Below threshold' if qm_bad else 'In range'}</span></div>
+  <div class="gate-fig"><b>{len(scored)}</b><span>{sub}</span></div>
+  <div class="chips">{chips}</div>
+</div>""")
 
-def _composition_section_html(composition: dict) -> str:
-    """File format: a donut + legend for the share-of-whole visual, plus
-    every distinct value always shown directly in a plain table underneath
-    - no collapse/expand, covering every value in one glance."""
-    if not composition:
-        return ""
-    data = composition.get(_DONUT_CATEGORY_KEY)
-    if not data or not data.get("top"):
-        return ""
-    title = _COMPOSITION_TITLES[_DONUT_CATEGORY_KEY]
-    all_values = data.get("all", data["top"])
-    top = data["top"]
-    other_count = data["total"] - sum(c for _v, c, _p in top)
-    body = (
-        '<div class="format-layout">'
-        '<div class="format-donut-col">'
-        + _category_donut_svg(top, other_count, data["total"])
-        + _format_legend_html(top, other_count, data["total"])
-        + "</div>"
-        f'<div class="format-table-col">{_all_values_table_html(all_values)}</div>'
-        "</div>"
-    )
-    return f'<div class="stat-card stat-card-widest"><div class="stat-label">{html.escape(title)}</div>{body}</div>'
+    mce = (report.stats or {}).get("mce_coverage") or {}
+    if mce.get("checked"):
+        pos, neg = mce.get("positive", {}), mce.get("negative", {})
+        pct = mce.get("pct")
+        mce_bad = pct is None or pct < 99.999
+        pos_ok = (pos.get("pct") or 0) >= 99.999
+        neg_ok = (neg.get("pct") or 0) >= 99.999
+        cards.append(f"""
+<div class="card gate{' bad' if mce_bad else ''}">
+  <div class="head"><h2>MCE detection</h2>
+  <span class="pill {'p-crit' if mce_bad else 'p-strong'}">{'Gap' if mce_bad else 'Full coverage'}</span></div>
+  <div class="gate-fig"><b>{_pct_str(pct)}</b><span>{mce.get("detected", 0):,} / {mce.get("checked", 0):,}</span></div>
+  <div class="chips">
+    <span class="chip {'c-s' if pos_ok else 'c-crit'}">Positive {pos.get("detected", 0):,} / {pos.get("checked", 0):,}</span>
+    <span class="chip {'c-s' if neg_ok else 'c-crit'}">Negative {neg.get("detected", 0):,} / {neg.get("checked", 0):,}</span>
+  </div>
+</div>""")
 
-
-def _corpus_breakdown_stat_html(cb: dict) -> str:
-    if not cb or not cb.get("total_generated"):
+    if not cards:
         return ""
-    label_names = {
-        "easy positive": "Easy positive", "hard positive": "Hard positive",
-        "easy negative": "Easy negative", "hard negative": "Hard negative",
-    }
-    rows = "".join(
-        f'<tr><td>{label_names.get(b["label"], b["label"])}</td>'
-        f'<td class="bc-acc">{b["accepted"]:,}</td><td>{b["generated"]:,}</td>'
-        f'<td>{b["disagreed"]:,}</td><td>{b["rate"]:.1f}%</td></tr>'
-        for b in cb.get("buckets", [])
-    )
-    return f"""
-<div class="stat-card stat-card-wide">
-  <div class="stat-label">Corpus Breakdown</div>
-  <table class="corpus-table"><tr><th></th><th>Accepted</th><th>Generated</th><th>Disagreed</th><th>Rate</th></tr>
-  {rows}
-  <tr class="corpus-total"><td>Total</td><td class="bc-acc">{cb.get("total_accepted", 0):,}</td>
-  <td>{cb.get("total_generated", 0):,}</td><td>{cb.get("total_disagreed", 0):,}</td>
-  <td>{cb.get("total_rate", 0):.1f}%</td></tr></table>
-</div>"""
+    return f'<div class="gates">{"".join(cards)}</div>'
 
 
 def _fix_list_html(core, additional) -> str:
@@ -514,151 +363,25 @@ def _fix_list_html(core, additional) -> str:
             what_sub += f" &middot; {scope_bit}"
         do_text = html.escape(_truncate_short(first.fix, 90)) if first.fix else "&mdash;"
         rows.append(f"""
-<div class="fixcard">
-  <span class="fixcard-k">Fix this</span>
-  <span class="fixcard-what">{html.escape(_truncate_short(lead, 90))}<small>{what_sub}</small></span>
-  <span class="fixcard-do">{do_text}<small>{html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>
+<div class="card fixcard">
+  <span class="k">Fix this</span>
+  <span class="what">{html.escape(_truncate_short(lead, 90))}<small>{what_sub}</small></span>
+  <span class="do">{do_text}<small>{html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>
 </div>""")
     return f'<div class="fix-section">{"".join(rows)}</div>'
 
 
-def _gates_summary_html(report: RunReport, core, additional) -> str:
-    """Three glanceable summary cards - QC Checks, Quality Metrics, MCE
-    Detection - each leading with one big bold number, shown right at the
-    top so the overall health of a run is readable without scrolling.
-    Adapted from (not copied from) the reference dashboards' "gates" row,
-    built from our own category groups / quality metrics / MCE stats
-    instead of a fixed external metric set."""
-    groups = core + additional
-    cards = []
-
-    if groups:
-        total_checks = sum(len(results) for _c, results in groups)
-        failed_checks = sum(_fail_count(results) for _c, results in groups)
-        n_fail_groups = sum(1 for _c, results in groups if _fail_count(results))
-        dots = "".join(
-            f'<span class="gate-dot" style="background:{RED if _fail_count(results) else GREEN}" '
-            f'title="{html.escape(_display_category(category))}"></span>'
-            for category, results in groups
-        )
-        pill = (f"{n_fail_groups} group(s) failed", RED) if n_fail_groups else ("All passing", GREEN)
-        cards.append(f"""
-<div class="gate-card{' bad' if n_fail_groups else ''}">
-  <div class="gate-head"><span class="gate-title">QC Checks</span>
-  <span class="gate-pill" style="background:{pill[1]}">{pill[0]}</span></div>
-  <div class="gate-fig">{total_checks - failed_checks:,} / {total_checks:,}</div>
-  <div class="gate-sub">{len(groups) - n_fail_groups} of {len(groups)} groups</div>
-  <div class="gate-dots">{dots}</div>
-</div>""")
-
-    qm = report.quality_metrics or {}
-    scored = [m for m in qm.values() if m.get("score") is not None]
-    if scored:
-        qm_bad = any(m.get("gate") and m.get("grade") == "critical" for m in scored)
-        chips = "".join(
-            f'<span class="gate-chip" style="background:{_GRADE_COLORS.get(m["grade"], MUTED)}">'
-            f'{html.escape(m["label"].split()[0])} {m["score"]:.3f}</span>'
-            for m in scored
-        )
-        cards.append(f"""
-<div class="gate-card{' bad' if qm_bad else ''}">
-  <div class="gate-head"><span class="gate-title">Quality Metrics</span>
-  <span class="gate-pill" style="background:{RED if qm_bad else GREEN}">{"Below threshold" if qm_bad else "In range"}</span></div>
-  <div class="gate-fig">{len(scored)}</div>
-  <div class="gate-sub">metric(s) scored</div>
-  <div class="gate-chips">{chips}</div>
-</div>""")
-
-    mce = (report.stats or {}).get("mce_coverage") or {}
-    if mce.get("checked"):
-        pos, neg = mce.get("positive", {}), mce.get("negative", {})
-        pct = mce.get("pct")
-        mce_bad = pct is None or pct < 99.999
-        pos_ok = (pos.get("pct") or 0) >= 99.999
-        neg_ok = (neg.get("pct") or 0) >= 99.999
-        cards.append(f"""
-<div class="gate-card{' bad' if mce_bad else ''}">
-  <div class="gate-head"><span class="gate-title">MCE Detection</span>
-  <span class="gate-pill" style="background:{RED if mce_bad else GREEN}">{"Gap" if mce_bad else "Full coverage"}</span></div>
-  <div class="gate-fig">{_pct_str(pct)}</div>
-  <div class="gate-sub">{mce.get("detected", 0):,} / {mce.get("checked", 0):,}</div>
-  <div class="gate-chips">
-    <span class="gate-chip" style="background:{GREEN if pos_ok else RED}">Positive {pos.get("detected", 0):,} / {pos.get("checked", 0):,}</span>
-    <span class="gate-chip" style="background:{GREEN if neg_ok else RED}">Negative {neg.get("detected", 0):,} / {neg.get("checked", 0):,}</span>
-  </div>
-</div>""")
-
-    if not cards:
-        return ""
-    return f'<div class="gates-row">{"".join(cards)}</div>'
-
-
-def _fail_detail_html(r) -> str:
-    """One failing check's detail - title, scope, lead text, examples, and
-    suggested fix. Only ever called for FAIL results; passed checks never
-    get this treatment (see _checklist_grid_html)."""
-    lead, examples = split_detail(r.detail)
-    lead = lead.rstrip().rstrip(",")  # split_detail can leave a dangling comma before a stripped "e.g. [...]"
-    scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
-    body = [f"<div>{html.escape(_truncate(lead))}</div>"]
-    if examples:
-        body.append('<ul class="examples">' + "".join(
-            f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
-    if r.fix:
-        body.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
-    return f'<div class="ckfail-item"><b>{html.escape(r.title)}</b>{scope_html}{"".join(body)}</div>'
-
-
-def _checklist_grid_html(core, additional) -> str:
-    """Compact, PowerBI-dashboard-style checklist, replacing both the old
-    "Checklist at a glance" table and the full per-check results table that
-    used to follow it. A passing category collapses to a single line (name
-    + its total check count - no per-check detail, since the color already
-    says every one of them passed). A failing category gets a highlighted
-    block showing only its FAILING checks, never the passing ones in that
-    same category - at real-report scale (hundreds of checks across dozens
-    of categories), showing full detail for every PASS was "over-showing"
-    far more than it helped."""
-    def _section(label: str, groups) -> str:
-        if not groups:
-            return ""
-        passed = sum(len(results) - _fail_count(results) for _c, results in groups)
-        total = sum(len(results) for _c, results in groups)
-        parts = [f'<div class="checklist-sublabel">{html.escape(label)} &middot; {len(groups)} '
-                 f'group(s) &middot; {passed} / {total}</div>']
-        pass_rows = []
-        for category, results in groups:
-            n_fail_cat = _fail_count(results)
-            n_total = len(results)
-            name = html.escape(_display_category(category))
-            if n_fail_cat:
-                fails = [r for r in results if r.status == Status.FAIL]
-                parts.append(
-                    '<div class="ckfail">'
-                    '<div class="ckfail-head"><span class="mk no">&#10005;</span>'
-                    f'<span class="cn"><b>{name}</b></span>'
-                    f'<span class="cc">{n_total - n_fail_cat} / {n_total}</span></div>'
-                    + "".join(_fail_detail_html(r) for r in fails)
-                    + "</div>"
-                )
-            else:
-                pass_rows.append(
-                    f'<div class="ck"><span class="mk ok">&#10003;</span>'
-                    f'<span class="cn">{name}</span><span class="cc">{n_total}</span></div>'
-                )
-        if pass_rows:
-            parts.append(f'<div class="cks">{"".join(pass_rows)}</div>')
-        return "".join(parts)
-
-    return ('<h2>Checklist</h2>'
-            + _section("Checklist", core)
-            + _section(ADDITIONAL_CHECKS_SECTION_TITLE, additional))
-
+# -------------------------------------------------------- quality metrics --
 
 _GRADE_COLORS = {
-    "strong": GREEN, "acceptable": "#2d5a8b", "weak": "#9a6700",
+    "strong": GREEN, "acceptable": "#22609c", "weak": "#8f5a00",
     "critical": RED, "report_only": MUTED, "n/a": MUTED,
 }
+_GRADE_PILL_CLASS = {
+    "strong": "p-strong", "acceptable": "p-ok", "weak": "p-weak",
+    "critical": "p-crit", "report_only": "p-info", "n/a": "p-info",
+}
+_LADDER_ON_CLASS = {"strong": "s", "acceptable": "a", "weak": "w", "critical": "c"}
 # (strong_min, acceptable_min, weak_min) per gated/graded metric - everything
 # below weak_min is "critical". Template Cluster Rate has no ladder (report
 # only, lower-is-better, no pass/fail grade per its own spec).
@@ -676,12 +399,10 @@ _METRIC_ORDER = [
 
 def _metric_ladder_html(score: float, strong_min: float, acceptable_min: float, weak_min: float) -> str:
     """A thin, four-zone (critical/weak/acceptable/strong) horizontal track
-    with a marker at the metric's actual score - our own visual for "where
-    does this score fall against its own thresholds", reusing the same
-    bar-track idiom already used for MCE coverage elsewhere in this report,
-    not the reference dashboards' own box-ladder."""
-    zones = [(0.0, weak_min, RED), (weak_min, acceptable_min, "#9a6700"),
-             (acceptable_min, strong_min, "#2d5a8b"), (strong_min, 1.0, GREEN)]
+    with a marker at the metric's actual score - reused as-is by
+    _quality_metrics_section_html (shared with the Streamlit app)."""
+    zones = [(0.0, weak_min, RED), (weak_min, acceptable_min, "#8f5a00"),
+             (acceptable_min, strong_min, "#22609c"), (strong_min, 1.0, GREEN)]
     segs = "".join(
         f'<div style="position:absolute;left:{a * 100:.1f}%;width:{(b - a) * 100:.1f}%;'
         f'height:100%;background:{color}"></div>'
@@ -697,6 +418,10 @@ def _metric_ladder_html(score: float, strong_min: float, acceptable_min: float, 
 
 
 def _quality_metrics_section_html(quality_metrics: dict) -> str:
+    """Full quality-metrics section (label/badge/score/bar-ladder/detail per
+    metric) - used as-is by the Streamlit app. The HTML/PDF export instead
+    uses the more compact _quality_metrics_table_card_html below, matching
+    the reference dashboards' table-plus-discrete-ladder layout."""
     if not quality_metrics:
         return ""
     rows = []
@@ -724,8 +449,495 @@ def _quality_metrics_section_html(quality_metrics: dict) -> str:
     return f'<h2>Quality Metrics</h2><div class="qm-grid">{"".join(rows)}</div>'
 
 
+def _ladder_zone_label(x: float) -> str:
+    s = f"{x:.3f}".rstrip("0").rstrip(".")
+    if s.startswith("0."):
+        s = s[1:]
+    return s
+
+
+def _metric_ladder_boxes_html(grade: str, strong_min: float, acceptable_min: float, weak_min: float) -> str:
+    """A discrete, four-box labeled ladder (critical/weak/acceptable/
+    strong threshold ranges, one box highlighted for the metric's actual
+    grade) - the HTML/PDF export's own visual for "where does this score
+    fall", matching the reference dashboards' ladder table cell."""
+    zones = [
+        (f"&lt; {_ladder_zone_label(weak_min)}", "critical"),
+        (f"{_ladder_zone_label(weak_min)}&ndash;{_ladder_zone_label(acceptable_min)}", "weak"),
+        (f"{_ladder_zone_label(acceptable_min)}&ndash;{_ladder_zone_label(strong_min)}", "acceptable"),
+        (f"&ge; {_ladder_zone_label(strong_min)}", "strong"),
+    ]
+    cells = "".join(
+        f'<span class="{"on " + _LADDER_ON_CLASS[zone_grade] if zone_grade == grade else ""}">{label}</span>'
+        for label, zone_grade in zones
+    )
+    return f'<div class="ladder">{cells}</div>'
+
+
+def _quality_metrics_table_card_html(quality_metrics: dict) -> str:
+    if not quality_metrics:
+        return ""
+    rows = []
+    for key in _METRIC_ORDER:
+        m = quality_metrics.get(key)
+        if not m:
+            continue
+        grade = m.get("grade", "n/a")
+        score = m.get("score")
+        score_str = f"{score:.3f}" if score is not None else "n/a"
+        if key in _METRIC_THRESHOLDS and score is not None:
+            ladder_cell = _metric_ladder_boxes_html(grade, *_METRIC_THRESHOLDS[key])
+        else:
+            ladder_cell = '<span class="muted">Lower is better</span>'
+        sub = html.escape(_truncate_short(m.get("detail", ""), 70))
+        rows.append(
+            f'<tr><td class="m"><b>{html.escape(m["label"])}</b><span class="sub">{sub}</span></td>'
+            f'<td class="r score">{score_str}</td>'
+            f'<td><span class="pill {_GRADE_PILL_CLASS.get(grade, "p-info")}">'
+            f'{html.escape(grade.replace("_", " ").title())}</span></td>'
+            f'<td>{ladder_cell}</td></tr>'
+        )
+    if not rows:
+        return ""
+    return (
+        '<div class="card"><div class="cardhead head"><h2>Quality metrics</h2></div>'
+        '<div class="scroll"><table><thead><tr><th>Metric</th><th class="r">Score</th><th>Grade</th>'
+        '<th><div class="ladder-key"><span>Crit</span><span>Weak</span><span>Accept</span>'
+        '<span>Strong</span></div></th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div></div>"
+    )
+
+
+# ------------------------------------------------------ data/stat cards ----
+
+def _accepted_by_class_card_html(cb: dict, dist: dict) -> str:
+    """Accepted/Generated/Disagreed/Rate per Easy/Hard x Positive/Negative
+    bucket when corpus_breakdown stats are available (matches the
+    reference dashboards' "Accepted by class" table exactly); falls back
+    to a plain count/share table from label_distribution stats when a SIT
+    doesn't have corpus_breakdown computed, rather than showing nothing."""
+    label_names = {
+        "easy positive": "Easy positive", "hard positive": "Hard positive",
+        "easy negative": "Easy negative", "hard negative": "Hard negative",
+    }
+    if cb and cb.get("total_generated"):
+        rows = "".join(
+            f'<tr><td>{label_names.get(b["label"], b["label"])}</td>'
+            f'<td class="r acc">{b["accepted"]:,}</td><td class="r">{b["generated"]:,}</td>'
+            f'<td class="r">{b["disagreed"]:,}</td><td class="r">{b["rate"]:.1f}%</td></tr>'
+            for b in cb.get("buckets", [])
+        )
+        title = "Accepted by class"
+        body = (
+            '<table><thead><tr><th>Class</th><th class="r">Accepted</th><th class="r">Generated</th>'
+            '<th class="r">Disagreed</th><th class="r">Rate</th></tr></thead><tbody>' + rows
+            + f'</tbody><tfoot><tr><td>Total</td><td class="r">{cb.get("total_accepted", 0):,}</td>'
+            f'<td class="r">{cb.get("total_generated", 0):,}</td>'
+            f'<td class="r">{cb.get("total_disagreed", 0):,}</td>'
+            f'<td class="r">{cb.get("total_rate", 0):.1f}%</td></tr></tfoot></table>'
+        )
+    elif dist and dist.get("total"):
+        dist_total = dist.get("total", 0) or 1
+        buckets = [("Easy positive", dist.get("easy positive", 0)), ("Hard positive", dist.get("hard positive", 0)),
+                   ("Easy negative", dist.get("easy negative", 0)), ("Hard negative", dist.get("hard negative", 0))]
+        rows = "".join(
+            f'<tr><td>{name}</td><td class="r acc">{c:,}</td>'
+            f'<td class="r">{c / dist_total * 100:.1f}%</td></tr>'
+            for name, c in buckets
+        )
+        title = "Label distribution"
+        body = (
+            '<table><thead><tr><th>Class</th><th class="r">Count</th><th class="r">Share</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table>'
+        )
+    else:
+        return ""
+    return f'<div class="card"><div class="cardhead head"><h2>{title}</h2></div><div class="scroll">{body}</div></div>'
+
+
+def _hist_card_html(dl: dict) -> str:
+    if not dl or not dl.get("total"):
+        return ""
+    histogram = dl.get("histogram") or []
+    if not histogram:
+        return ""
+    max_count = max((c for _s, _e, c in histogram), default=0) or 1
+    overflow = dl.get("overflow", 0)
+    total_cols = len(histogram) + (1 if overflow else 0)
+    bars = "".join(
+        f'<i style="height:{max(c / max_count * 100, 1.5):.1f}%" '
+        f'title="{s:,}-{e:,} chars &middot; {c:,} doc(s)"></i>'
+        for s, e, c in histogram
+    )
+    if overflow:
+        bars += (f'<i class="over" style="height:{max(overflow / max_count * 100, 1.5):.1f}%" '
+                  f'title="{dl.get("overflow_from", "?"):,}+ chars &middot; {overflow:,} doc(s)"></i>')
+    axis_min = histogram[0][0]
+    axis_max = histogram[-1][1]
+    median = dl.get("median", 0)
+    median_str = f"{median:,.0f}" if isinstance(median, float) else f"{median:,}"
+    bin_width = (histogram[0][1] - histogram[0][0]) or 1
+    if median < axis_max:
+        idx = max(0, min(len(histogram) - 1, int((median - axis_min) // bin_width)))
+        frac = ((median - axis_min) - idx * bin_width) / bin_width
+        median_pos = (idx + frac) / total_cols * 100.0
+    else:
+        median_pos = (len(histogram) + 0.5) / total_cols * 100.0
+    median_pos = max(2.0, min(98.0, median_pos))
+    return f"""
+<div class="card pad">
+  <div class="head"><h2>Document length &middot; characters</h2></div>
+  <div>
+    <div class="hist" style="grid-template-columns:repeat({total_cols},minmax(0,1fr))">{bars}
+      <div class="median" style="left:{median_pos:.2f}%"><span>Median {median_str}</span></div>
+    </div>
+    <div class="axis"><span style="left:0">{axis_min:,}</span>
+    <span style="left:100%">{axis_max:,}{"+" if overflow else ""}</span></div>
+  </div>
+  <div class="stats">
+    <div><b>{dl.get("min", 0):,}</b><span>Min</span></div>
+    <div><b>{median_str}</b><span>Median</span></div>
+    <div><b>{dl.get("max", 0):,}</b><span>Max</span></div>
+  </div>
+</div>"""
+
+
+def _flagged_format_values(core, additional, format_values: list[str]) -> set[str]:
+    """Which file-format values (if any) a real FAIL result is calling out
+    by name - e.g. a "file_format != file_ext" mismatch - so the file
+    format card can flag that one value with a small red marker, matching
+    the reference dashboards' own flagged-row treatment. Generic text
+    search rather than a hardcoded check name, so it keeps working if the
+    check that owns this gets renamed."""
+    blobs = [r.detail for _category, results in core + additional
+             for r in results if r.status == Status.FAIL
+             and ("file_format" in r.detail or "file_ext" in r.detail)]
+    if not blobs:
+        return set()
+    blob = " ".join(blobs)
+    return {v for v in format_values if v and v in blob}
+
+
+def _format_frows_html(data: dict, flagged: set[str]) -> str:
+    if not data or not data.get("all"):
+        return ""
+    all_values = data["all"]
+    max_count = max((c for _v, c, _p in all_values), default=0) or 1
+    rows = []
+    for value, count, pct in all_values:
+        is_flagged = str(value) in flagged
+        cls = "frow flag" if is_flagged else "frow"
+        mark = " <b>&#10005;</b>" if is_flagged else ""
+        rows.append(
+            f'<div class="{cls}" title="{html.escape(str(value))} &middot; {count:,} doc(s) &middot; {pct:.1f}%">'
+            f'<span class="fn">{html.escape(str(value))}{mark}</span>'
+            f'<span class="ft"><i style="width:{max(count / max_count * 100, 1.5):.1f}%"></i></span>'
+            f'<span class="fc">{count:,}</span><span class="fp">{pct:.1f}%</span></div>'
+        )
+    return (
+        f'<div class="card pad"><div class="head"><h2>File format</h2><b>{len(all_values)}</b></div>'
+        f'<div class="frows">{"".join(rows)}</div></div>'
+    )
+
+
+_BUSINESS_CONTEXT_LABELS = {
+    "domain": "Domain", "department": "Department", "function": "Function",
+    "workflow": "Workflow", "process": "Process", "persona": "Persona",
+    "role": "Role", "document_type": "Document type",
+}
+
+
+def _business_context_spread_html(composition: dict) -> str:
+    """One compact row per business-context dimension - distinct value
+    count, the share range across every value (min-max %, from the full
+    "all" distribution, not just the top N), and what an evenly-split
+    distribution would look like (100/distinct). At real-report scale some
+    of these dimensions have 30-180+ distinct values, and a reader checking
+    for balance only ever needs "how many values, how skewed is it", not
+    every individual value's bar - reused as-is by the Streamlit app."""
+    rows = []
+    for key, label in _BUSINESS_CONTEXT_LABELS.items():
+        data = composition.get(key)
+        all_values = data.get("all") if data else None
+        if not all_values:
+            continue
+        distinct = data["distinct"]
+        min_pct = all_values[-1][2]
+        max_pct = all_values[0][2]
+        even_pct = 100.0 / distinct if distinct else 0.0
+        rows.append(
+            f"<tr><td>{html.escape(label)}</td><td><b>{distinct}</b></td>"
+            f"<td>{min_pct:.1f}&ndash;{max_pct:.1f}%</td><td>{even_pct:.1f}%</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        '<div class="stat-card"><div class="stat-label">Business Context Spread</div>'
+        '<div class="scroll"><table class="bc-table"><tr><th>Dimension</th><th>Values</th>'
+        "<th>Share range</th><th>If even</th></tr>" + "".join(rows) + "</table></div></div>"
+    )
+
+
+# -------------------------------------------------------------- checklist --
+
+def _fail_detail_html(r) -> str:
+    """One failing check's detail - title, scope, lead text, examples, and
+    suggested fix. Only ever called for FAIL results; passed checks never
+    get this treatment (see _checklist_card_html)."""
+    lead, examples = split_detail(r.detail)
+    lead = lead.rstrip().rstrip(",")  # split_detail can leave a dangling comma before a stripped "e.g. [...]"
+    scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
+    body = [f"<div>{html.escape(_truncate(lead))}</div>"]
+    if examples:
+        body.append('<ul class="examples">' + "".join(
+            f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
+    if r.fix:
+        body.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
+    return f'<div class="ckfail-item"><b>{html.escape(r.title)}</b>{scope_html}{"".join(body)}</div>'
+
+
+def _checklist_card_html(core, additional) -> str:
+    """Compact, PowerBI-dashboard-style checklist, wrapped in its own card.
+    A passing category collapses to a single line (name + its total check
+    count - no per-check detail, since the color already says every one of
+    them passed). A failing category gets a highlighted block showing only
+    its FAILING checks, never the passing ones in that same category - at
+    real-report scale (hundreds of checks across dozens of categories),
+    showing full detail for every PASS was "over-showing" far more than it
+    helped."""
+    groups = core + additional
+    if not groups:
+        return ""
+    total_checks = sum(len(results) for _c, results in groups)
+    failed_checks = sum(_fail_count(results) for _c, results in groups)
+
+    def _section(label: str, section_groups) -> str:
+        if not section_groups:
+            return ""
+        passed = sum(len(results) - _fail_count(results) for _c, results in section_groups)
+        total = sum(len(results) for _c, results in section_groups)
+        parts = [f'<div class="sublabel">{html.escape(label)} &middot; {len(section_groups)} '
+                 f'group(s) &middot; {passed} / {total}</div>']
+        pass_rows = []
+        for category, results in section_groups:
+            n_fail_cat = _fail_count(results)
+            n_total = len(results)
+            name = html.escape(_display_category(category))
+            if n_fail_cat:
+                fails = [r for r in results if r.status == Status.FAIL]
+                parts.append(
+                    '<div class="ckfail">'
+                    '<div class="ckfail-head"><span class="mk no">&#10005;</span>'
+                    f'<span class="cn"><b>{name}</b></span>'
+                    f'<span class="cc">{n_total - n_fail_cat} / {n_total}</span></div>'
+                    + "".join(_fail_detail_html(r) for r in fails)
+                    + "</div>"
+                )
+            else:
+                pass_rows.append(
+                    f'<div class="ck"><span class="mk ok">&#10003;</span>'
+                    f'<span class="cn">{name}</span><span class="cc">{n_total}</span></div>'
+                )
+        if pass_rows:
+            parts.append(f'<div class="cks">{"".join(pass_rows)}</div>')
+        return "".join(parts)
+
+    body = _section("Checklist", core) + _section(ADDITIONAL_CHECKS_SECTION_TITLE, additional)
+    return (f'<div class="card"><div class="cardhead head"><h2>QC checks</h2>'
+            f'<b>{total_checks - failed_checks:,} / {total_checks:,}</b></div>{body}</div>')
+
 
 # ---------------------------------------------------------------- HTML ----
+
+_PAGE_CSS = """
+:root{
+  --bg:#f3f5f9; --surface:#ffffff; --sunk:#eaeef5;
+  --ink:#14213d; --muted:#56637d; --line:#d5dce8;
+  --navy:#1f3a68; --on-navy:#ffffff; --on-navy-muted:#c3d2ea; --hero:#1f3a68;
+  --mark:#2f5fa3; --mark-soft:#b9cbe6;
+  --strong:#1a7046; --strong-bg:#dff1e7;
+  --ok:#22609c; --ok-bg:#dde9f6;
+  --weak:#8f5a00; --weak-bg:#fbeccb;
+  --crit:#a82424; --crit-bg:#f8dddd;
+  --neutral-bg:#e4e8f0;
+}
+*{box-sizing:border-box}
+@page{size:A4;margin:12mm 14mm}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:13.5px;line-height:1.35}
+.page{max-width:820px;margin:0 auto;padding:16px 16px 28px;display:flex;flex-direction:column;gap:10px}
+h1,h2,p{margin:0}
+h1{font-size:19px;line-height:1.15}
+h2{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.mono{font-family:Consolas,"Cascadia Mono",ui-monospace,Menlo,monospace;font-size:.88em}
+.muted{color:var(--muted)}
+.label{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:700}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;min-width:0}
+.pad{padding:10px 13px;display:flex;flex-direction:column;gap:8px}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:6px 10px;flex-wrap:wrap}
+.head b{font-variant-numeric:tabular-nums}
+.pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  padding:2px 8px;border-radius:99px;white-space:nowrap}
+.p-strong{background:var(--strong-bg);color:var(--strong)}
+.p-ok{background:var(--ok-bg);color:var(--ok)}
+.p-weak{background:var(--weak-bg);color:var(--weak)}
+.p-crit{background:var(--crit-bg);color:var(--crit)}
+.p-info{background:var(--neutral-bg);color:var(--muted)}
+
+.band{background:var(--navy);color:var(--on-navy);border-radius:8px;padding:11px 16px;
+  display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 18px;align-items:center}
+.band .label{color:var(--on-navy-muted)}
+.band h1{color:var(--on-navy)}
+.band .meta{color:var(--on-navy-muted);font-size:12px;margin-top:2px;display:flex;flex-wrap:wrap;gap:1px 12px}
+.verdict{border-radius:6px;padding:6px 14px;text-align:center}
+.verdict b{display:block;font-size:15px;line-height:1.15}
+.verdict span{font-size:11px;font-variant-numeric:tabular-nums}
+
+.rowA{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,5fr);gap:10px}
+.hero{padding:11px 14px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 20px;align-items:end}
+.hero-main b{display:block;font-size:34px;line-height:.95;color:var(--hero);font-variant-numeric:tabular-nums}
+.hero-main span{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--hero)}
+.hero-split{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px}
+.hero-split b{display:block;font-size:19px;line-height:1;font-variant-numeric:tabular-nums}
+.hero-split span{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.hero-foot{grid-column:1 / -1;display:flex;flex-direction:column;gap:4px}
+.bar{height:6px;border-radius:99px;background:var(--mark-soft);overflow:hidden;display:flex}
+.bar i{display:block;background:var(--hero)}
+.hero-foot .t{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:11px;
+  color:var(--muted);font-variant-numeric:tabular-nums}
+.hero-foot b{color:var(--ink)}
+.comps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px}
+.comps b{display:block;font-family:Consolas,"Cascadia Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  overflow-wrap:anywhere;line-height:1.25}
+.comps b small{font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-weight:400;
+  color:var(--muted);font-size:11px}
+.comps span{color:var(--muted);font-size:11px}
+
+.gates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.gate{padding:9px 13px 10px;display:flex;flex-direction:column;gap:6px;border-top:4px solid var(--strong)}
+.gate.bad{border-top-color:var(--crit)}
+.gate-fig{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.gate-fig b{font-size:22px;line-height:1;font-variant-numeric:tabular-nums}
+.gate-fig span{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
+.dots{display:flex;flex-wrap:wrap;gap:2px}
+.dot{width:14px;height:14px;border-radius:3px;display:grid;place-items:center;font-size:8.5px;font-weight:700}
+.d-s{background:var(--strong-bg);color:var(--strong)}
+.d-c{background:var(--crit-bg);color:var(--crit);outline:1.5px solid var(--crit);outline-offset:-1.5px}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+.chip{font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+.c-s{background:var(--strong-bg);color:var(--strong)}
+.c-a{background:var(--ok-bg);color:var(--ok)}
+.c-w{background:var(--weak-bg);color:var(--weak)}
+.c-crit{background:var(--crit-bg);color:var(--crit)}
+.c-n{background:var(--neutral-bg);color:var(--muted)}
+
+.fix-section{display:flex;flex-direction:column;gap:6px}
+.fixcard{border-left:5px solid var(--crit);padding:8px 13px;display:grid;
+  grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:3px 16px;align-items:center}
+.fixcard .k{font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--crit)}
+.fixcard .what{font-weight:700;font-size:12.5px}
+.fixcard .what small{display:block;font-weight:400;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.fixcard .do{font-size:12px}
+.fixcard .do small{display:block;font-size:11px;color:var(--muted)}
+
+.two{display:flex;flex-direction:column;gap:10px}
+.three{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr) minmax(0,4fr);gap:10px;align-items:stretch}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:11.5px;font-variant-numeric:tabular-nums}
+th,td{padding:4px 9px;text-align:left;border-top:1px solid var(--line);vertical-align:middle}
+thead th{font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+td.r,th.r{text-align:right;white-space:nowrap}
+td .sub{display:block;color:var(--muted);font-size:10.5px;white-space:normal;margin-top:1px}
+tfoot td{font-weight:700;background:var(--sunk)}
+td.acc{font-weight:700;color:var(--hero)}
+.cardhead{padding:9px 13px 7px}
+.ladder,.ladder-key{display:grid;grid-template-columns:repeat(4,48px);gap:2px}
+.ladder span{background:var(--sunk);color:var(--muted);font-size:9px;text-align:center;padding:2px 0;
+  border-radius:3px;white-space:nowrap}
+.ladder .on.s{background:var(--strong-bg);color:var(--strong);font-weight:700;outline:1.5px solid var(--strong);outline-offset:-1.5px}
+.ladder .on.a{background:var(--ok-bg);color:var(--ok);font-weight:700;outline:1.5px solid var(--ok);outline-offset:-1.5px}
+.ladder .on.w{background:var(--weak-bg);color:var(--weak);font-weight:700;outline:1.5px solid var(--weak);outline-offset:-1.5px}
+.ladder .on.c{background:var(--crit-bg);color:var(--crit);font-weight:700;outline:1.5px solid var(--crit);outline-offset:-1.5px}
+.ladder-key{text-align:center}
+
+.hist{position:relative;height:110px;display:grid;gap:2px;align-items:end;border-bottom:1px solid var(--line);margin-top:10px}
+.hist i{display:block;background:var(--mark);border-radius:2px 2px 0 0;min-height:2px}
+.hist i.over{background:var(--mark-soft)}
+.median{position:absolute;top:-10px;bottom:0;border-left:1.5px dashed var(--ink);pointer-events:none}
+.median span{position:absolute;left:4px;top:-1px;font-size:9.5px;white-space:nowrap;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+.axis{position:relative;height:14px;font-size:9.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.axis span{position:absolute;top:2px;transform:translateX(-50%)}
+.axis span:first-child{transform:none}
+.axis span:last-child{transform:translateX(-100%)}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.stats b{display:block;font-size:15px;line-height:1.1;font-variant-numeric:tabular-nums}
+.stats span{font-size:10.5px;color:var(--muted)}
+
+.frows{display:flex;flex-direction:column;gap:2px}
+.frow{display:grid;grid-template-columns:86px minmax(0,1fr) 42px 38px;gap:6px;align-items:center;
+  font-size:10.5px;font-variant-numeric:tabular-nums}
+.fn{font-family:Consolas,"Cascadia Mono",ui-monospace,Menlo,monospace;font-size:10px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.fn b{color:var(--crit)}
+.ft{height:8px;display:block;background:var(--neutral-bg);border-radius:0 3px 3px 0}
+.ft i{display:block;height:100%;background:var(--mark);border-radius:0 3px 3px 0}
+.fc{text-align:right}
+.fp{text-align:right;color:var(--muted)}
+.frow.flag .fn{color:var(--crit);font-weight:700}
+
+.stat-card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 13px}
+.stat-label{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  font-weight:700;margin-bottom:6px}
+.bc-table{margin:0}
+.bc-table th,.bc-table td{padding:3px 8px;text-align:right}
+.bc-table th:first-child,.bc-table td:first-child{text-align:left}
+
+.cks{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 16px;padding:3px 13px 9px}
+.ck{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:6px;align-items:baseline;padding:3px 0;
+  border-top:1px solid var(--line);font-size:11.5px}
+.mk{width:15px;height:15px;border-radius:4px;display:grid;place-items:center;font-size:9.5px;font-weight:700;
+  align-self:center}
+.mk.ok{background:var(--strong-bg);color:var(--strong)}
+.mk.no{background:var(--crit-bg);color:var(--crit)}
+.cn{overflow-wrap:anywhere}
+.cc{color:var(--muted);font-variant-numeric:tabular-nums}
+.ckfail{background:var(--crit-bg);border-radius:6px;padding:6px 13px;margin:0 13px 6px}
+.ckfail-head{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:6px;align-items:baseline;
+  font-size:11.5px}
+.ckfail-head .cc{color:var(--crit);font-weight:700}
+.ckfail-item{margin:5px 0 0 22px;font-size:11px}
+.ckfail-item b{font-weight:700}
+.row-scope{color:var(--muted);font-size:10.5px;font-weight:400}
+.examples{margin:0.2rem 0 0.1rem 0;padding-left:1rem;font-size:10.5px}
+.examples li{margin:0.1rem 0}
+.fix{color:var(--hero);font-size:10.5px;margin-top:0.25rem}
+.sublabel{padding:8px 13px 2px;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+  font-weight:700;border-top:1px solid var(--line)}
+
+.qm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px;margin:0.5rem 0 1rem}
+.qm-row{background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:9px 13px}
+.qm-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.qm-label{font-weight:700;color:var(--hero);font-size:12px}
+.qm-badge{color:white;font-size:9.5px;font-weight:700;padding:1px 7px;border-radius:4px;letter-spacing:.03em;
+  white-space:nowrap}
+.qm-score{margin-left:auto;font-weight:700;font-size:13px;color:var(--hero)}
+.qm-detail{font-size:10.5px;color:var(--muted);margin-top:2px}
+.qm-sample{opacity:0.8}
+
+@media print{
+  body{background:#fff}
+  .page{max-width:none;padding:0}
+  /* Avoid splitting one card/gate/row mid-content across a page break, but
+     deliberately NOT on the .gates/.rowA/.two/.three row containers
+     themselves - avoiding a split on the whole row (rather than each card
+     in it) forced the entire row to the next page even when only one card
+     in it didn't fit, leaving large blank gaps at the bottom of the
+     previous page. */
+  .card,.gate,.fixcard,.ckfail,.ck,.qm-row{break-inside:avoid;page-break-inside:avoid}
+}
+"""
+
 
 def render_html(report: RunReport) -> str:
     counts = report.counts()
@@ -734,183 +946,36 @@ def render_html(report: RunReport) -> str:
     headline, subline, is_failing = _verdict_text(n_fail, gated_critical)
 
     core, additional = _core_and_additional(report)
+    stats = report.stats or {}
+    composition = stats.get("composition") or {}
+    format_data = composition.get("format")
+    format_values = [str(v) for v, _c, _p in (format_data.get("all", []) if format_data else [])]
+    flagged = _flagged_format_values(core, additional, format_values)
 
-    stat_cards = "".join([
-        _doc_counts_and_mce_html(report.doc_counts, (report.stats or {}).get("mce_coverage", {})),
-        _document_length_stat_html((report.stats or {}).get("document_length", {})),
-        _label_distribution_stat_html((report.stats or {}).get("label_distribution", {})),
-        _corpus_breakdown_stat_html((report.stats or {}).get("corpus_breakdown", {})),
-        _composition_section_html((report.stats or {}).get("composition", {})),
-        _business_context_spread_html((report.stats or {}).get("composition", {})),
+    two_row = "".join([
+        _quality_metrics_table_card_html(report.quality_metrics),
+        _accepted_by_class_card_html(stats.get("corpus_breakdown") or {}, stats.get("label_distribution") or {}),
+    ])
+    three_row = "".join([
+        _hist_card_html(stats.get("document_length") or {}),
+        _format_frows_html(format_data, flagged),
+        _business_context_spread_html(composition),
     ])
 
-    parts = [f"""<!doctype html>
-<html><head><meta charset="utf-8">
-<title>QC Report - {html.escape(report.label)}</title>
-<style>
-  * {{ box-sizing: border-box; }}
-  body {{ font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin: 0;
-          padding: 1.75rem 2rem; color: {INK}; background: #ffffff; line-height: 1.45;
-          font-size: 13px; }}
-  h1 {{ font-size: 1.3rem; margin: 0 0 0.15rem; color: {ACCENT}; }}
-  h2 {{ margin: 0; font-size: 1rem; }}
-  .path {{ color: {MUTED}; font-size: 0.8rem; margin-bottom: 1rem; }}
-  .verdict {{ display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; text-align: center;
-              margin-bottom: 1rem; }}
-  .verdict b {{ display: block; font-size: 1.05rem; line-height: 1.2; }}
-  .verdict span {{ font-size: 0.78rem; opacity: 0.92; }}
-  .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-                gap: 12px; margin-bottom: 1.3rem; align-items: start; }}
-  .stat-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
-  .stat-card-wide {{ grid-column: span 2; min-width: 320px; }}
-  .stat-card-widest {{ grid-column: span 3; min-width: 480px; }}
-  .stat-label {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
-                 color: {MUTED}; margin-bottom: 6px; }}
-  .stat-primary {{ font-size: 1.35rem; font-weight: 700; color: {ACCENT}; }}
-  .stat-secondary {{ font-size: 0.78rem; color: {MUTED}; margin-top: 2px; }}
-  .stat-count {{ font-weight: 700; color: {ACCENT}; }}
-  .doc-mce-card {{ display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }}
-  .doc-mce-col {{ flex: 1 1 240px; min-width: 240px; }}
-  .donut {{ border-radius: 50%; flex: 0 0 auto; display: flex; align-items: center;
-            justify-content: center; }}
-  .donut-hole {{ width: 68%; height: 68%; border-radius: 50%; background: #ffffff;
-                 display: flex; flex-direction: column; align-items: center; justify-content: center;
-                 font-size: 0.82rem; font-weight: 700; text-align: center; }}
-  .mce-layout {{ display: flex; align-items: center; gap: 16px; }}
-  .mce-bars {{ flex: 1 1 auto; min-width: 0; }}
-  .mce-bar-row {{ display: flex; align-items: center; gap: 8px; margin: 3px 0; }}
-  .mce-bar-label {{ width: 56px; flex: 0 0 auto; font-size: 0.78rem; color: {MUTED}; }}
-  .mce-bar-value {{ width: 150px; flex: 0 0 auto; font-size: 0.78rem; color: {INK}; text-align: right; }}
-  .bar-track {{ flex: 1 1 auto; height: 9px; border-radius: 5px; background: {BORDER};
-                overflow: hidden; }}
-  .bar-fill {{ height: 100%; border-radius: 5px; }}
-  .dist-grid {{ margin-top: 2px; }}
-  .dist-row {{ display: flex; align-items: center; gap: 8px; margin: 4px 0; }}
-  .dist-name {{ width: 96px; flex: 0 0 auto; font-size: 0.78rem; color: {MUTED}; }}
-  .dist-value {{ width: 86px; flex: 0 0 auto; font-size: 0.78rem; font-weight: 700;
-                 color: {ACCENT}; text-align: right; }}
-  .doclen-layout {{ display: grid; grid-template-columns: 1fr 90px; gap: 14px; align-items: center;
-                     margin-top: 6px; }}
-  .doclen-chart {{ min-width: 0; }}
-  .doclen-bars {{ display: flex; align-items: flex-end; gap: 2px; height: 70px; }}
-  .doclen-bar {{ flex: 1 1 0; background: {ACCENT}; border-radius: 2px 2px 0 0; min-height: 2px; }}
-  .doclen-bar-overflow {{ background: {MUTED}; }}
-  .doclen-axis {{ display: flex; justify-content: space-between; font-size: 0.68rem;
-                  color: {MUTED}; margin-top: 3px; }}
-  .doclen-stats {{ display: flex; flex-direction: column; gap: 6px; }}
-  .mini-stat {{ background: #ffffff; border: 1px solid {BORDER}; border-radius: 6px;
-                padding: 5px 8px; text-align: center; }}
-  .info-strip {{ display: flex; flex-wrap: wrap; gap: 10px; margin: 0.6rem 0 1.1rem; }}
-  .info-chip {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 999px;
-                padding: 4px 12px; font-size: 0.76rem; display: flex; gap: 6px; align-items: baseline; }}
-  .info-chip-label {{ color: {MUTED}; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.65rem; }}
-  .info-chip-value {{ color: {ACCENT}; font-weight: 700; }}
-  .comp-legend {{ list-style: none; margin: 0; padding: 0; font-size: 0.74rem; flex: 1 1 auto; min-width: 140px; }}
-  .comp-legend li {{ margin: 3px 0; }}
-  .legend-swatch {{ display: inline-block; width: 10px; height: 10px; margin-right: 6px;
-                     border-radius: 2px; vertical-align: middle; }}
-  details.show-all summary {{ cursor: pointer; font-size: 0.72rem; color: {ACCENT};
-    padding: 2px 0; user-select: none; }}
-  .show-all-table {{ font-size: 0.72rem; margin: 4px 0 0; max-height: 220px;
-                      display: block; overflow-y: auto; }}
-  .show-all-table th, .show-all-table td {{ padding: 0.2rem 0.4rem; }}
-  .format-layout {{ display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }}
-  .format-donut-col {{ display: flex; align-items: center; gap: 14px; flex: 0 0 auto; }}
-  .format-table-col {{ flex: 1 1 220px; min-width: 220px; }}
-  table {{ border-collapse: collapse; width: 100%; margin-bottom: 1.3rem; table-layout: fixed; }}
-  th, td {{ border: 1px solid {BORDER}; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.82rem;
-            vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }}
-  th {{ background: {PANEL}; color: {ACCENT}; }}
-  tbody tr:nth-child(even) {{ background: #fafbfc; }}
-  .fix {{ color: {ACCENT}; font-size: 0.78rem; margin-top: 0.3rem; }}
-  .examples {{ margin: 0.25rem 0 0.15rem 0; padding-left: 1.1rem; font-size: 0.8rem; }}
-  .examples li {{ margin: 0.1rem 0; }}
-  .row-scope {{ color: {MUTED}; font-size: 0.72rem; font-weight: 400; }}
-  /* Fix cards - one per distinct failing check, minimal "what/do" layout */
-  .fix-section {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 1.1rem; }}
-  .fixcard {{ background: {PANEL}; border-left: 4px solid {RED}; border-radius: 6px;
-              padding: 9px 14px; display: grid; grid-template-columns: 70px minmax(0, 1fr) minmax(0, 1fr);
-              gap: 4px 18px; align-items: center; }}
-  .fixcard-k {{ font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase;
-                font-weight: 700; color: {RED}; }}
-  .fixcard-what {{ font-weight: 700; font-size: 0.85rem; }}
-  .fixcard-do {{ font-weight: 700; font-size: 0.82rem; color: {ACCENT}; }}
-  .fixcard-what small, .fixcard-do small {{ display: block; font-weight: 400; font-size: 0.74rem;
-    color: {MUTED}; margin-top: 1px; }}
-  /* Checklist - compact pass rows (name + count only) vs highlighted fail blocks */
-  .checklist-sublabel {{ font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase;
-    color: {MUTED}; font-weight: 700; margin: 1.1rem 0 0.4rem; }}
-  .cks {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0 18px; }}
-  .ck {{ display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
-         padding: 4px 0; border-top: 1px solid {BORDER}; font-size: 0.82rem; }}
-  .mk {{ width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center;
-         justify-content: center; font-size: 0.65rem; font-weight: 700; }}
-  .mk.ok {{ background: #dff1e7; color: {GREEN}; }}
-  .mk.no {{ background: #f8dddd; color: {RED}; }}
-  .cn {{ overflow-wrap: anywhere; }}
-  .cc {{ color: {MUTED}; font-variant-numeric: tabular-nums; }}
-  .ckfail {{ background: #fdf1f1; border-radius: 6px; padding: 8px 12px; margin: 6px 0; }}
-  .ckfail-head {{ display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px;
-                  align-items: baseline; font-size: 0.85rem; }}
-  .ckfail-head .cc {{ color: {RED}; font-weight: 700; }}
-  .ckfail-item {{ margin: 6px 0 0 26px; font-size: 0.8rem; }}
-  .ckfail-item b {{ font-weight: 700; }}
-  .gates-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-                gap: 12px; margin-bottom: 1.1rem; }}
-  .gate-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-top: 4px solid {GREEN};
-                border-radius: 8px; padding: 11px 15px 13px; }}
-  .gate-card.bad {{ border-top-color: {RED}; }}
-  .gate-head {{ display: flex; justify-content: space-between; align-items: baseline;
-                gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }}
-  .gate-title {{ font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
-                 color: {MUTED}; font-weight: 700; }}
-  .gate-pill {{ color: white; font-size: 0.62rem; font-weight: 700; padding: 2px 8px;
-                border-radius: 999px; white-space: nowrap; }}
-  .gate-fig {{ font-size: 1.7rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; }}
-  .gate-sub {{ font-size: 0.74rem; color: {MUTED}; margin: 1px 0 6px; }}
-  .gate-dots {{ display: flex; flex-wrap: wrap; gap: 3px; }}
-  .gate-dot {{ width: 11px; height: 11px; border-radius: 3px; display: inline-block; }}
-  .gate-chips {{ display: flex; flex-wrap: wrap; gap: 5px; }}
-  .gate-chip {{ color: white; font-size: 0.68rem; font-weight: 700; padding: 2px 7px;
-                border-radius: 4px; white-space: nowrap; }}
-  .corpus-table {{ margin: 4px 0 0; font-size: 0.78rem; table-layout: auto; }}
-  .corpus-table th, .corpus-table td {{ padding: 0.25rem 0.5rem; }}
-  .corpus-table tr.corpus-total td {{ font-weight: 700; background: #ffffff; }}
-  .corpus-table .bc-acc {{ font-weight: 700; color: {ACCENT}; }}
-  .bc-table {{ margin: 4px 0 0; font-size: 0.78rem; table-layout: auto; }}
-  .bc-table th, .bc-table td {{ padding: 0.25rem 0.5rem; text-align: right; }}
-  .bc-table th:first-child, .bc-table td:first-child {{ text-align: left; }}
-  .qm-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-              gap: 12px; margin: 0.6rem 0 1.3rem; }}
-  .qm-row {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
-  .qm-head {{ display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }}
-  .qm-label {{ font-weight: 700; color: {ACCENT}; font-size: 0.85rem; }}
-  .qm-badge {{ color: white; font-size: 0.62rem; font-weight: 700; padding: 1px 7px;
-               border-radius: 4px; letter-spacing: 0.03em; white-space: nowrap; }}
-  .qm-score {{ margin-left: auto; font-weight: 700; font-size: 0.9rem; color: {ACCENT}; }}
-  .qm-detail {{ font-size: 0.76rem; color: {MUTED}; margin-top: 2px; }}
-  .qm-sample {{ opacity: 0.8; }}
-
-</style></head><body>
-<h1>SIT Output Quality Report</h1>
-<div class="path"><strong>{html.escape(report.label)}</strong></div>
-{_generation_info_html(report.generation_info)}
-<div class="verdict" style="background:{RED if is_failing else GREEN};color:white;">
-  <b>{html.escape(headline)}</b>
-  <span>{html.escape(subline)}</span>
-</div>
-
-{_gates_summary_html(report, core, additional)}
-
-{_fix_list_html(core, additional)}
-
-<div class="stat-grid">{stat_cards}</div>
-
-{_quality_metrics_section_html(report.quality_metrics)}
-
-{_checklist_grid_html(core, additional)}
-</body></html>"""]
-    return "".join(parts)
+    body = [
+        f'<!doctype html><html><head><meta charset="utf-8">'
+        f'<title>QC Report - {html.escape(report.label)}</title>'
+        f'<style>{_PAGE_CSS}</style></head><body><div class="page">',
+        _band_header_html(report, headline, subline, is_failing),
+        f'<div class="rowA">{_hero_card_html(report.doc_counts)}{_pipeline_card_html(report.generation_info)}</div>',
+        _gates_summary_html(report, core, additional),
+        _fix_list_html(core, additional),
+        f'<div class="two">{two_row}</div>' if two_row else "",
+        f'<div class="three">{three_row}</div>' if three_row else "",
+        _checklist_card_html(core, additional),
+        "</div></body></html>",
+    ]
+    return "".join(part for part in body if part)
 
 
 # ----------------------------------------------------------------- PDF ----
@@ -939,16 +1004,16 @@ def render_pdf(report: RunReport) -> bytes:
         if pct:
             fill_w = width * min(pct, 100.0) / 100.0
             if pct >= 99.999:
-                pdf.set_fill_color(26, 127, 55)
+                pdf.set_fill_color(26, 112, 70)
             else:
-                pdf.set_fill_color(207, 34, 46)
+                pdf.set_fill_color(168, 36, 36)
             pdf.rect(x, y, fill_w, height, style="F")
         pdf.set_xy(x, y + height + 1.5)
 
     pdf.set_font("Helvetica", "B", 16)
     pdf.multi_cell(0, 8, "SIT Output Quality Report", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(107, 114, 128)
+    pdf.set_text_color(86, 99, 125)
     pdf.multi_cell(0, 5, _clean(report.label), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
 
@@ -965,7 +1030,7 @@ def render_pdf(report: RunReport) -> bytes:
         info_bits.append(f"MCE: {info['mce_version']}")
     if info_bits:
         pdf.set_font("Helvetica", "", 9)
-        pdf.set_text_color(31, 58, 95)
+        pdf.set_text_color(31, 58, 104)
         pdf.multi_cell(0, 5, _clean("  |  ".join(info_bits)), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
@@ -974,7 +1039,7 @@ def render_pdf(report: RunReport) -> bytes:
     n_fail = counts.get("FAIL", 0)
     gated_critical = _gated_critical_metrics(report.quality_metrics)
     headline, subline, is_failing = _verdict_text(n_fail, gated_critical)
-    color = (207, 34, 46) if is_failing else (26, 127, 55)
+    color = (168, 36, 36) if is_failing else (26, 112, 70)
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(*color)
     pdf.multi_cell(0, 7, _clean(headline), new_x="LMARGIN", new_y="NEXT")
@@ -1012,7 +1077,7 @@ def render_pdf(report: RunReport) -> bytes:
              for r in results if r.status == Status.FAIL]
     if fails:
         pdf.set_font("Helvetica", "B", 11)
-        pdf.set_text_color(31, 58, 95)
+        pdf.set_text_color(31, 58, 104)
         pdf.multi_cell(0, 6, _clean(f"Fix these {len(fails)}"), new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
         pdf.set_font("Helvetica", "", 9)
@@ -1069,7 +1134,7 @@ def render_pdf(report: RunReport) -> bytes:
                    ("Hard negative", dist.get("hard negative", 0))]
         dist_total = dist.get("total", 0) or 1
         max_count = max((c for _, c in buckets), default=0) or 1
-        pdf.set_fill_color(31, 58, 95)
+        pdf.set_fill_color(31, 58, 104)
         for name, count in buckets:
             x, y = pdf.get_x(), pdf.get_y()
             pdf.cell(32, 4.2, _clean(name))
@@ -1123,14 +1188,14 @@ def render_pdf(report: RunReport) -> bytes:
         pdf.ln(1)
 
     composition = (report.stats or {}).get("composition") or {}
-    format_data = composition.get(_DONUT_CATEGORY_KEY)
+    format_data = composition.get("format")
     if format_data and format_data.get("top"):
         pdf.set_font("Helvetica", "B", 13)
         pdf.multi_cell(0, 7, "File format", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 9)
         all_values = format_data.get("all", format_data["top"])
         max_count = max((c for _v, c, _p in all_values), default=0) or 1
-        pdf.set_fill_color(31, 58, 95)
+        pdf.set_fill_color(31, 58, 104)
         for value, count, pct in all_values:
             x, y = pdf.get_x(), pdf.get_y()
             pdf.cell(45, 4.2, _clean(_truncate(str(value), 40)))
@@ -1162,13 +1227,13 @@ def render_pdf(report: RunReport) -> bytes:
         per-check detail - the color already says every one of them
         passed); a fail shows its count plus the failing checks only,
         never the passing ones in that same category. Mirrors
-        _checklist_grid_html's HTML/Streamlit behavior."""
+        _checklist_card_html's HTML/Streamlit behavior."""
         if not groups:
             return
         passed = sum(len(results) - _fail_count(results) for _c, results in groups)
         total = sum(len(results) for _c, results in groups)
         pdf.set_font("Helvetica", "B", 11)
-        pdf.set_text_color(31, 58, 95)
+        pdf.set_text_color(31, 58, 104)
         pdf.multi_cell(0, 6, _clean(f"{label} - {len(groups)} group(s) - {passed} / {total}"),
                         new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(0, 0, 0)
@@ -1180,7 +1245,7 @@ def render_pdf(report: RunReport) -> bytes:
             if not n_fail_cat:
                 pdf.multi_cell(0, 5, _clean(f"[OK]  {name}  ({n_total})"), new_x="LMARGIN", new_y="NEXT")
                 continue
-            pdf.set_text_color(207, 34, 46)
+            pdf.set_text_color(168, 36, 36)
             pdf.set_font("Helvetica", "B", 9)
             pdf.multi_cell(0, 5, _clean(f"[FAIL]  {name}  ({n_total - n_fail_cat} / {n_total})"),
                             new_x="LMARGIN", new_y="NEXT")
