@@ -315,17 +315,50 @@ def _gates_summary_html(report: RunReport, core, additional) -> str:
     return f'<div class="gates">{"".join(cards)}</div>'
 
 
-def _fix_list_html(core, additional) -> str:
-    """One minimal card per distinct (category, check) that's failing - a
-    bold headline ("what") with a small muted subline of concrete numbers,
-    and a bold suggested action ("do") with a small muted subline naming
-    the category and its pass rate. Every FAIL CheckResult for the same
-    check is grouped into one card (scopes like Agreements/Positive,
-    Agreements/Negative, ... collapse into one line) rather than one row
-    per scope, matching the "very minimal, to the point" fix-card style of
-    the reference dashboards - adapted to our own data (we group
-    structurally; we don't attempt to semantically re-merge each check's
-    free-text detail the way a hand-written dashboard would)."""
+_METRIC_FIX_HINTS = {
+    "target_language_purity": "Review and regenerate the non-target-language passages",
+    "sit_position_diversity": "Spread the SIT value across more positions in the document",
+    "keyword_proximity_diversity": "Vary how close the nearest keyword sits to the SIT value",
+    "negative_label_uniqueness": "Vary the negative lead-in / label wording",
+}
+
+
+def _metric_fix_rows(quality_metrics: dict) -> list[tuple[str, str, str, str]]:
+    """One (tag, tag_css_class, what, do) row per quality metric that's
+    Weak or Critical - these are real "fix this" opportunities even though
+    only a Critical-gated metric flips the overall verdict (see
+    _gated_critical_metrics), so they belong in the same punch list as the
+    failing checklist items, not off in the Quality Metrics table alone
+    where an at-a-glance reader may never scroll to see them."""
+    rows: list[tuple[str, str, str, str]] = []
+    for key in _METRIC_ORDER:
+        m = quality_metrics.get(key)
+        if not m or key not in _METRIC_THRESHOLDS:
+            continue
+        grade = m.get("grade")
+        score = m.get("score")
+        if grade not in ("critical", "weak") or score is None:
+            continue
+        strong_min, acceptable_min, weak_min = _METRIC_THRESHOLDS[key]
+        needs = weak_min if grade == "critical" else acceptable_min
+        tag, cls = ("CRITICAL", "t-crit") if grade == "critical" else ("WEAK", "t-weak")
+        what = f"{m['label']} at {score:.3f}, needs ≥ {_ladder_zone_label(needs)}"
+        do = _METRIC_FIX_HINTS.get(key, "Review this metric's scoring detail.")
+        rows.append((tag, cls, what, do))
+    return rows
+
+
+def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str:
+    """One compact row per issue - a severity tag, a crisp one-line "what's
+    wrong" (hard-truncated to a single line via CSS ellipsis, full text in
+    a hover title=...), and an equally crisp one-line fix action. Replaces
+    the older multi-line what/do card: at real-report scale a reader wants
+    to scan a short punch list, not read a paragraph per issue - the full
+    detail (examples, scope, pass rate) is still one click away in the
+    checklist. Covers both failing checklist checks (tagged QC) and
+    Weak/Critical quality metrics (tagged WEAK/CRITICAL), since both are
+    genuine "fix this" items even though only a gated-critical metric
+    flips the overall verdict."""
     cat_results = {category: results for category, results in core + additional}
     groups: dict[tuple[str, str], list] = {}
     order: list[tuple[str, str]] = []
@@ -338,37 +371,25 @@ def _fix_list_html(core, additional) -> str:
                 groups[key] = []
                 order.append(key)
             groups[key].append(r)
-    if not groups:
-        return ""
 
-    rows = []
+    rows: list[tuple[str, str, str, str]] = []
     for category, title in order:
         items = groups[(category, title)]
         first = items[0]
         lead, _examples = split_detail(first.detail)
-        scopes = sorted({r.scope for r in items if r.scope})
-        if len(scopes) > 1:
-            scope_bit = f"{len(items)} scope(s)"
-        elif scopes:
-            scope_bit = html.escape(scopes[0])
-        else:
-            scope_bit = ""
-        cat_total = len(cat_results.get(category, []))
-        cat_passed = cat_total - _fail_count(cat_results.get(category, []))
-        # Direct, concrete wording first (the actual numbers/fact - "5000 !=
-        # 4459"), with the technical check name demoted to a small subline -
-        # a plain reader scans the fact, not the check's internal title.
-        what_sub = html.escape(_truncate_short(title, 80))
-        if scope_bit:
-            what_sub += f" &middot; {scope_bit}"
-        do_text = html.escape(_truncate_short(first.fix, 90)) if first.fix else "&mdash;"
-        rows.append(f"""
-<div class="card fixcard">
-  <span class="k">Fix this</span>
-  <span class="what">{html.escape(_truncate_short(lead, 90))}<small>{what_sub}</small></span>
-  <span class="do">{do_text}<small>{html.escape(_display_category(category))} &middot; {cat_passed} / {cat_total}</small></span>
-</div>""")
-    return f'<div class="fix-section">{"".join(rows)}</div>'
+        lead = lead.rstrip().rstrip(",")
+        rows.append(("QC", "t-crit", lead or title, first.fix or "See the checklist for detail."))
+    rows.extend(_metric_fix_rows(quality_metrics or {}))
+    if not rows:
+        return ""
+
+    row_html = "".join(
+        f'<div class="fixrow"><span class="tag {cls}">{tag}</span>'
+        f'<span class="fr-what" title="{html.escape(what)}">{html.escape(what)}</span>'
+        f'<span class="fr-do" title="{html.escape(do)}">{html.escape(do)}</span></div>'
+        for tag, cls, what, do in rows
+    )
+    return f'<div class="card"><div class="cardhead head"><h2>Fix these {len(rows)}</h2></div>{row_html}</div>'
 
 
 # -------------------------------------------------------- quality metrics --
@@ -866,15 +887,14 @@ h2{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut
 .c-crit{background:var(--crit-bg);color:var(--crit)}
 .c-n{background:var(--neutral-bg);color:var(--muted)}
 
-.fix-section{display:flex;flex-direction:column;gap:3px}
-.fixcard{border-left:4px solid var(--crit);padding:5px 10px;display:grid;
-  grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:1px 12px;align-items:center;
-  border-radius:7px 11px 11px 7px}
-.fixcard .k{font-size:9px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--crit)}
-.fixcard .what{font-weight:700;font-size:10.5px}
-.fixcard .what small{display:block;font-weight:400;font-size:9px;color:var(--muted);font-variant-numeric:tabular-nums}
-.fixcard .do{font-size:10px}
-.fixcard .do small{display:block;font-size:9px;color:var(--muted)}
+.tag{display:inline-block;font-size:8px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;
+  padding:3px 6px;border-radius:5px;white-space:nowrap;text-align:center}
+.t-crit{background:var(--crit-bg);color:var(--crit)}
+.t-weak{background:var(--weak-bg);color:var(--weak)}
+.fixrow{display:grid;grid-template-columns:58px minmax(0,1fr) minmax(0,1fr);gap:6px 12px;
+  align-items:center;padding:5px 11px;border-top:1px solid var(--line)}
+.fr-what{font-weight:700;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr-do{font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .two{display:flex;flex-direction:column;gap:7px}
 .three{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,4fr) minmax(0,4fr);gap:7px;align-items:stretch}
@@ -972,7 +992,7 @@ td.acc{font-weight:700;color:var(--hero)}
      in it) forced the entire row to the next page even when only one card
      in it didn't fit, leaving large blank gaps at the bottom of the
      previous page. */
-  .card,.gate,.fixcard,.ckfail,.ck,.qm-row{break-inside:avoid;page-break-inside:avoid}
+  .card,.gate,.fixrow,.ckfail,.ck,.qm-row{break-inside:avoid;page-break-inside:avoid}
 }
 """
 
@@ -1010,7 +1030,7 @@ def render_html(report: RunReport) -> str:
         _band_header_html(report, headline, subline, is_failing),
         f'<div class="rowA">{_hero_card_html(report.doc_counts)}{_pipeline_card_html(report.generation_info)}</div>',
         _gates_summary_html(report, core, additional),
-        _fix_list_html(core, additional),
+        _fix_list_html(core, additional, report.quality_metrics),
         f'<div class="two">{two_row}</div>' if two_row else "",
         f'<div class="three">{three_row}</div>' if three_row else "",
         _checklist_card_html(core, additional),
