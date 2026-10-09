@@ -218,7 +218,7 @@ def _pipeline_card_html(info: dict) -> str:
         return ""
     comps = []
     if info.get("generator_model"):
-        version_bit = (f'<small>{html.escape(str(info["generator_model_version"]))}</small>'
+        version_bit = (f' <small>({html.escape(str(info["generator_model_version"]))})</small>'
                        if info.get("generator_model_version") else "")
         comps.append((f'{html.escape(info["generator_model"])}{version_bit}', "Doc generation model"))
     if info.get("sit_grader_model"):
@@ -304,7 +304,7 @@ def _gates_summary_html(report: RunReport, core, additional) -> str:
   <div class="head"><h2>MCE detection</h2>
   <span class="pill {'p-crit' if mce_bad else 'p-strong'}">{'Gap' if mce_bad else 'Full coverage'}</span></div>
   <div class="gate-fig"><b>{_pct_str(pct)}</b><span>{mce.get("detected", 0):,} / {mce.get("checked", 0):,}</span></div>
-  <div class="chips">
+  <div class="chips chips-stack">
     <span class="chip {'c-s' if pos_ok else 'c-crit'}">Positive {pos.get("detected", 0):,} / {pos.get("checked", 0):,}</span>
     <span class="chip {'c-s' if neg_ok else 'c-crit'}">Negative {neg.get("detected", 0):,} / {neg.get("checked", 0):,}</span>
   </div>
@@ -355,11 +355,12 @@ _CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
 # file(s) are actually present in raw_doc/ (delta +275)") to get it down
 # to the shortest line that still states the actual numbers/fields - never
 # a hardcoded per-check rewrite (there are dozens of distinct checks), just
-# narration words that add no information once the tag already says "QC":
-# the "<file> claims" lead-in, "(s)" plurals, "actually", and a redundant
-# slash before a trailing "(delta ...)" aside.
+# narration words that add no information once the tag already says "QC".
+# The source file name is kept (as a short "file: fact" prefix, not dropped
+# outright) - which file disagrees is part of "what's actually wrong", not
+# narration; only the verb "claims" is noise.
 _FACT_CLEANUP = [
-    (re.compile(r"^\S+\.(?:json|jsonl)\s+claims\s+", re.IGNORECASE), ""),
+    (re.compile(r"^(\S+\.(?:json|jsonl))\s+claims\s+", re.IGNORECASE), r"\1: "),
     (re.compile(r"\bfile\(s\)", re.IGNORECASE), "files"),
     (re.compile(r"\brow\(s\)", re.IGNORECASE), "rows"),
     (re.compile(r"\bvalue\(s\)", re.IGNORECASE), "values"),
@@ -770,20 +771,25 @@ def _business_context_spread_html(composition: dict) -> str:
 
 # -------------------------------------------------------------- checklist --
 
-def _fail_detail_html(r) -> str:
-    """One failing check's detail - title, scope, lead text, examples, and
-    suggested fix. Only ever called for FAIL results; passed checks never
-    get this treatment (see _checklist_card_html)."""
-    lead, examples = split_detail(r.detail)
-    lead = lead.rstrip().rstrip(",")  # split_detail can leave a dangling comma before a stripped "e.g. [...]"
-    scope_html = f' <span class="row-scope">({html.escape(r.scope)})</span>' if r.scope else ""
-    body = [f"<div>{html.escape(_truncate(lead))}</div>"]
-    if examples:
-        body.append('<ul class="examples">' + "".join(
-            f"<li>{html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
-    if r.fix:
-        body.append(f'<div class="fix">Suggested fix: {html.escape(r.fix)}</div>')
-    return f'<div class="ckfail-item"><b>{html.escape(r.title)}</b>{scope_html}{"".join(body)}</div>'
+def _fail_group_html(title: str, items: list) -> str:
+    """Every failing CheckResult sharing one title - i.e. the exact same
+    check, just run against several scopes (Agreements/Positive,
+    Agreements/Negative, ...) - collapsed into ONE block: the title once,
+    one short simplified-fact line per scope, and the suggested fix once
+    (not repeated per scope). At real-report scale a check that fails
+    across 2-4 scopes used to print the same title and the same "Suggested
+    fix: ..." sentence 2-4 times in a row - real repeated information with
+    nothing new in it beyond the one differing number per scope."""
+    lines = []
+    for r in items:
+        lead, _examples = split_detail(r.detail)
+        lead = lead.rstrip().rstrip(",")
+        fact = html.escape(_simplify_fact(lead or title, limit=110))
+        scope_bit = f'<span class="row-scope">{html.escape(r.scope)}:</span> ' if r.scope and len(items) > 1 else ""
+        lines.append(f"<div>{scope_bit}{fact}</div>")
+    fix = next((r.fix for r in items if r.fix), "")
+    fix_html = f'<div class="fix">Suggested fix: {html.escape(fix)}</div>' if fix else ""
+    return f'<div class="ckfail-item"><b>{html.escape(title)}</b>{"".join(lines)}{fix_html}</div>'
 
 
 def _checklist_card_html(core, additional) -> str:
@@ -815,12 +821,19 @@ def _checklist_card_html(core, additional) -> str:
             name = html.escape(_display_category(category))
             if n_fail_cat:
                 fails = [r for r in results if r.status == Status.FAIL]
+                fail_groups: dict[str, list] = {}
+                fail_order: list[str] = []
+                for r in fails:
+                    if r.title not in fail_groups:
+                        fail_groups[r.title] = []
+                        fail_order.append(r.title)
+                    fail_groups[r.title].append(r)
                 parts.append(
                     '<div class="ckfail">'
                     '<div class="ckfail-head"><span class="mk no">&#10005;</span>'
                     f'<span class="cn"><b>{name}</b></span>'
                     f'<span class="cc">{n_total - n_fail_cat} / {n_total}</span></div>'
-                    + "".join(_fail_detail_html(r) for r in fails)
+                    + "".join(_fail_group_html(t, fail_groups[t]) for t in fail_order)
                     + "</div>"
                 )
             else:
@@ -895,7 +908,7 @@ h2{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut
 .hero-split span{font-size:9.5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .hero-foot{grid-column:1 / -1;display:flex;flex-direction:column;gap:3px}
 .bar{height:5px;border-radius:99px;background:var(--mark-soft);overflow:hidden;display:flex}
-.bar i{display:block;background:var(--mark)}
+.bar i{display:block;background:var(--strong)}
 .hero-foot .t{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:9.5px;
   color:var(--muted);font-variant-numeric:tabular-nums}
 .hero-foot b{color:var(--ink)}
@@ -918,6 +931,7 @@ h2{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut
 .d-s{background:var(--strong-bg);color:var(--strong)}
 .d-c{background:var(--crit-bg);color:var(--crit);outline:1.5px solid var(--crit);outline-offset:-1.5px}
 .chips{display:flex;flex-wrap:wrap;gap:3px}
+.chips-stack{flex-direction:column;align-items:center;gap:4px}
 .chip{font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;font-variant-numeric:tabular-nums;
   white-space:nowrap}
 .c-s{background:var(--strong-bg);color:var(--strong)}
@@ -955,7 +969,7 @@ td.acc{font-weight:700;color:var(--hero)}
 .ladder-key{text-align:center}
 
 .hist{position:relative;height:62px;display:grid;gap:2px;align-items:end;border-bottom:1px solid var(--line);margin-top:9px}
-.hist i{display:block;background:var(--mark);border-radius:2px 2px 0 0;min-height:2px}
+.hist i{display:block;background:var(--brand);border-radius:2px 2px 0 0;min-height:2px}
 .hist i.over{background:var(--mark-soft)}
 .median{position:absolute;top:-9px;bottom:0;border-left:1.5px dashed var(--ink);pointer-events:none}
 .median span{position:absolute;left:4px;top:-1px;font-size:8.5px;white-space:nowrap;color:var(--ink);
@@ -975,7 +989,7 @@ td.acc{font-weight:700;color:var(--hero)}
   overflow:hidden;text-overflow:ellipsis}
 .fn b{color:var(--crit)}
 .ft{height:7px;display:block;background:var(--neutral-bg);border-radius:0 3px 3px 0}
-.ft i{display:block;height:100%;background:var(--mark);border-radius:0 3px 3px 0}
+.ft i{display:block;height:100%;background:var(--brand);border-radius:0 3px 3px 0}
 .fc{text-align:right}
 .fp{text-align:right;color:var(--muted)}
 .frow.flag .fn{color:var(--crit);font-weight:700}

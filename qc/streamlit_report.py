@@ -73,67 +73,95 @@ def _inject_metric_css() -> None:
         "border-top: 1px solid rgba(128,128,128,0.2); }"
         ".bc-table th:first-child, .bc-table td:first-child { text-align: left; }"
         # Gates summary row (see report_render.py's own _gates_summary_html,
-        # reused as-is here) - same class names, defined once per render.
-        ".gates-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); "
-        "gap: 12px; margin-bottom: 1.1rem; }"
-        f".gate-card {{ background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25); "
-        f"border-top: 4px solid {GREEN}; border-radius: 8px; padding: 11px 15px 13px; }}"
-        f".gate-card.bad {{ border-top-color: {RED}; }}"
-        ".gate-head { display: flex; justify-content: space-between; align-items: baseline; "
-        "gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }"
-        ".gate-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; "
-        "opacity: 0.7; font-weight: 700; }"
-        ".gate-pill { color: white; font-size: 0.62rem; font-weight: 700; padding: 2px 8px; "
-        "border-radius: 999px; white-space: nowrap; }"
-        f".gate-fig {{ font-size: 1.7rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; }}"
-        ".gate-sub { font-size: 0.74rem; opacity: 0.7; margin: 1px 0 6px; }"
-        ".gate-dots { display: flex; flex-wrap: wrap; gap: 3px; }"
-        ".gate-dot { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }"
-        ".gate-chips { display: flex; flex-wrap: wrap; gap: 5px; }"
-        ".gate-chip { color: white; font-size: 0.68rem; font-weight: 700; padding: 2px 7px; "
-        "border-radius: 4px; white-space: nowrap; }"
+        # reused as-is here) - same class names as the current HTML/PDF
+        # export's CSS (kept in sync whenever that markup's classes change,
+        # since this is a second independent stylesheet for the same shared
+        # HTML - a stale copy here renders the gates row unstyled, not just
+        # differently styled).
+        ".gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); "
+        "gap: 10px; margin-bottom: 1rem; }"
+        ".card { background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25); "
+        "border-radius: 10px; }"
+        f".gate {{ padding: 9px 13px 10px; border-left: 4px solid {GREEN}; "
+        "border-radius: 7px 10px 10px 7px; }}"
+        f".gate.bad {{ border-left-color: {RED}; }}"
+        ".card .head, .gate .head { display: flex; justify-content: space-between; "
+        "align-items: baseline; gap: 6px 10px; flex-wrap: wrap; }"
+        ".card h2, .gate h2 { font-size: 0.68rem; letter-spacing: 0.07em; text-transform: uppercase; "
+        "opacity: 0.6; font-weight: 700; margin: 0; }"
+        ".pill { display: inline-block; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em; "
+        "text-transform: uppercase; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }"
+        f".p-strong {{ background: rgba(26,127,55,0.15); color: {GREEN}; }}"
+        f".p-crit {{ background: rgba(207,34,46,0.15); color: {RED}; }}"
+        ".p-ok { background: rgba(45,90,139,0.15); color: #2d5a8b; }"
+        ".p-weak { background: rgba(154,103,0,0.15); color: #9a6700; }"
+        ".p-info { background: rgba(128,128,128,0.18); opacity: 0.8; }"
+        f".gate-fig {{ font-size: 1.4rem; font-weight: 700; color: {ACCENT}; line-height: 1.1; "
+        "display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }}"
+        ".gate-fig span { font-size: 0.74rem; font-weight: 400; opacity: 0.7; }"
+        ".dots { display: flex; flex-wrap: wrap; gap: 3px; }"
+        ".dot { width: 12px; height: 12px; border-radius: 50%; display: grid; place-items: center; "
+        "font-size: 7px; font-weight: 700; }"
+        f".d-s {{ background: rgba(26,127,55,0.18); color: {GREEN}; }}"
+        f".d-c {{ background: rgba(207,34,46,0.18); color: {RED}; outline: 1.5px solid {RED}; "
+        "outline-offset: -1.5px; }}"
+        ".chips { display: flex; flex-wrap: wrap; gap: 4px; }"
+        ".chips-stack { flex-direction: column; align-items: center; gap: 4px; }"
+        ".chip { font-size: 0.62rem; font-weight: 700; padding: 2px 7px; border-radius: 99px; "
+        "white-space: nowrap; }"
+        f".c-s {{ background: rgba(26,127,55,0.15); color: {GREEN}; }}"
+        ".c-a { background: rgba(45,90,139,0.15); color: #2d5a8b; }"
+        ".c-w { background: rgba(154,103,0,0.15); color: #9a6700; }"
+        f".c-crit {{ background: rgba(207,34,46,0.15); color: {RED}; }}"
+        ".c-n { background: rgba(128,128,128,0.18); opacity: 0.8; }"
         "</style>",
         unsafe_allow_html=True,
     )
 
 
 def _result_table_html(results) -> str:
-    """One <table> per category, every result (PASS or FAIL alike) a single
-    compact row by default with the full detail/examples/fix behind a
-    native <details> in the same cell ONLY when there's genuinely something
-    beyond the summary (truncated lead text, examples, or a fix) - the
-    Streamlit-rendered twin of report_render.py's own _result_row_html
-    (same no-dead-expand-arrow rule), kept as plain HTML (not one Streamlit
-    widget per row) purely for render speed at real-report scale (see the
-    call site's comment)."""
+    """One <table> per category, one row per distinct CHECK (title) rather
+    than one row per scope - every result sharing a title (e.g. the same
+    check run against Agreements/Positive, Agreements/Negative, ...) is
+    combined into one row: a short simplified-fact one-liner per scope,
+    and the suggested fix shown once, not repeated per scope. The
+    Streamlit-rendered twin of report_render.py's own _fail_group_html,
+    kept as plain HTML (not one Streamlit widget per row) purely for
+    render speed at real-report scale (see the call site's comment)."""
     import html as _html
 
     color = {Status.FAIL.value: RED, Status.WARN.value: "#9a6700", Status.PASS.value: GREEN,
              Status.INFO.value: GREEN}
-    rows = []
+    groups: dict[str, list] = {}
+    order: list[str] = []
     for r in results:
-        lead, examples = split_detail(r.detail)
-        lead = lead.rstrip().rstrip(",")  # dangling comma before a stripped "e.g. [...]"
-        short = _truncate(lead, 90)
-        lead_truncated = short != lead
-        short_html = _html.escape(short)
-        body_parts = []
-        if lead_truncated:
-            body_parts.append(f"<div>{_html.escape(_truncate(lead))}</div>")
-        if examples:
-            body_parts.append('<ul class="qc-row-examples">' + "".join(
-                f"<li>{_html.escape(_truncate(item))}</li>" for item in examples) + "</ul>")
-        if r.fix:
-            body_parts.append(f'<div class="qc-row-fix">Suggested fix: {_html.escape(r.fix)}</div>')
-        scope_html = f' <span class="qc-row-scope">({_html.escape(r.scope)})</span>' if r.scope else ""
-        if body_parts:
-            result_html = f'<details class="qc-row-expand"><summary>{short_html}</summary>{"".join(body_parts)}</details>'
-        else:
-            result_html = short_html
+        if r.title not in groups:
+            groups[r.title] = []
+            order.append(r.title)
+        groups[r.title].append(r)
+
+    rows = []
+    for title in order:
+        items = groups[title]
+        fact_lines = []
+        for r in items:
+            lead, _examples = split_detail(r.detail)
+            lead = lead.rstrip().rstrip(",")
+            fact = _html.escape(_simplify_fact(lead or title, limit=110))
+            scope_bit = (f'<span class="qc-row-scope">{_html.escape(r.scope)}:</span> '
+                         if r.scope and len(items) > 1 else "")
+            fact_lines.append(f"<div>{scope_bit}{fact}</div>")
+        fix = next((r.fix for r in items if r.fix), "")
+        fix_html = f'<div class="qc-row-fix">Suggested fix: {_html.escape(fix)}</div>' if fix else ""
+        result_html = "".join(fact_lines) + fix_html
+        worst = next((r.status.value for r in items if r.status == Status.FAIL),
+                      items[0].status.value)
+        scope_html = (f' <span class="qc-row-scope">({_html.escape(items[0].scope)})</span>'
+                      if len(items) == 1 and items[0].scope else "")
         rows.append(
-            f'<tr><td><span class="qc-row-badge" style="background:{color.get(r.status.value, GREEN)}">'
-            f'{r.status.value}</span></td>'
-            f"<td>{_html.escape(r.title)}{scope_html}</td>"
+            f'<tr><td><span class="qc-row-badge" style="background:{color.get(worst, GREEN)}">'
+            f'{worst}</span></td>'
+            f"<td>{_html.escape(title)}{scope_html}</td>"
             f"<td>{result_html}</td></tr>"
         )
     return ('<table class="qc-result-table"><tr><th>Status</th><th>Check</th><th>Result</th></tr>'
