@@ -361,6 +361,10 @@ _CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
 # narration; only the verb "claims" is noise.
 _FACT_CLEANUP = [
     (re.compile(r"^(\S+\.(?:json|jsonl))\s+claims\s+", re.IGNORECASE), r"\1: "),
+    # "counts.positive=5625 but 5900 files..." -> "...=5625 ≠ 5900 files..." -
+    # a mismatch between two numbers reads as a mismatch at a glance with
+    # "!=" instead of the word "but", which doesn't say which way it's wrong.
+    (re.compile(r"(=[\d,]+)\s+but\s+(?=[\d,]+\b)"), "\\1 ≠ "),
     (re.compile(r"\bfile\(s\)", re.IGNORECASE), "files"),
     (re.compile(r"\brow\(s\)", re.IGNORECASE), "rows"),
     (re.compile(r"\bvalue\(s\)", re.IGNORECASE), "values"),
@@ -384,6 +388,19 @@ def _simplify_fact(text: str, limit: int = 100) -> str:
     for pattern, repl in _FACT_CLEANUP:
         text = pattern.sub(repl, text)
     return _truncate_short(text.strip(), limit)
+
+
+def _short_clause(text: str, limit: int = 100) -> str:
+    """A suggested-fix sentence, cut at its first " - " (every check's fix
+    text puts the justification clause there, e.g. "Reconcile X with Y -
+    they must describe the same document set" -> "Reconcile X with Y") so
+    the checklist's fix line states the action without restating why -
+    the fact line right above it already shows the actual numbers."""
+    text = (text or "").strip()
+    m = _CLAUSE_BREAK_RE.search(text)
+    if m:
+        text = text[:m.start()].strip()
+    return _truncate_short(text, limit)
 
 
 def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str:
@@ -774,12 +791,18 @@ def _business_context_spread_html(composition: dict) -> str:
 def _fail_group_html(title: str, items: list) -> str:
     """Every failing CheckResult sharing one title - i.e. the exact same
     check, just run against several scopes (Agreements/Positive,
-    Agreements/Negative, ...) - collapsed into ONE block: the title once,
-    one short simplified-fact line per scope, and the suggested fix once
-    (not repeated per scope). At real-report scale a check that fails
-    across 2-4 scopes used to print the same title and the same "Suggested
-    fix: ..." sentence 2-4 times in a row - real repeated information with
-    nothing new in it beyond the one differing number per scope."""
+    Agreements/Negative, ...) - collapsed into ONE block: one short
+    simplified-fact line per scope, and the fix once (not repeated per
+    scope), its own justification clause dropped too. No separate bold
+    check-title line any more - check titles are phrased as the PASSING
+    condition (e.g. "counts.positive matches actual delivered raw_doc file
+    count"), which reads backwards/confusing printed right above a block
+    that's actively showing it does NOT match; the fact line already says
+    what's actually wrong, in plain numbers, without that framing. At
+    real-report scale a check failing across 2-4 scopes used to print the
+    same title and the same full "Suggested fix: ..." sentence that many
+    times - real repeated information with nothing new beyond the one
+    differing number per scope."""
     lines = []
     for r in items:
         lead, _examples = split_detail(r.detail)
@@ -788,8 +811,8 @@ def _fail_group_html(title: str, items: list) -> str:
         scope_bit = f'<span class="row-scope">{html.escape(r.scope)}:</span> ' if r.scope and len(items) > 1 else ""
         lines.append(f"<div>{scope_bit}{fact}</div>")
     fix = next((r.fix for r in items if r.fix), "")
-    fix_html = f'<div class="fix">Suggested fix: {html.escape(fix)}</div>' if fix else ""
-    return f'<div class="ckfail-item"><b>{html.escape(title)}</b>{"".join(lines)}{fix_html}</div>'
+    fix_html = f'<div class="fix">Fix: {html.escape(_short_clause(fix))}</div>' if fix else ""
+    return f'<div class="ckfail-item">{"".join(lines)}{fix_html}</div>'
 
 
 def _checklist_card_html(core, additional) -> str:
@@ -931,7 +954,8 @@ h2{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut
 .d-s{background:var(--strong-bg);color:var(--strong)}
 .d-c{background:var(--crit-bg);color:var(--crit);outline:1.5px solid var(--crit);outline-offset:-1.5px}
 .chips{display:flex;flex-wrap:wrap;gap:3px}
-.chips-stack{flex-direction:column;align-items:center;gap:4px}
+.chips-stack{flex-direction:column;align-items:stretch;gap:5px}
+.chips-stack .chip{display:block;width:100%;text-align:left;box-sizing:border-box;padding:4px 9px}
 .chip{font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;font-variant-numeric:tabular-nums;
   white-space:nowrap}
 .c-s{background:var(--strong-bg);color:var(--strong)}

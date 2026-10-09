@@ -59,9 +59,20 @@ def test_render_html_does_not_show_detail_for_passed_checks():
 
 def test_render_html_shows_detail_only_for_failed_checks():
     html_out = render_html(_sample_report())
-    assert "counts.total == positive + negative" in html_out
     assert "5 != 4 (delta +1)" in html_out
     assert "Reconcile the counts." in html_out
+
+
+def test_render_html_checklist_drops_the_passing_phrased_check_title():
+    """Check titles are phrased as the PASSING condition ("counts.total ==
+    positive + negative") - printed as a bold header right above a block
+    that's actively showing the check failed, that reads backwards to a
+    reader ("it says this matches/equals, but then shows it doesn't") - a
+    real point of confusion flagged against a downloaded report. The
+    checklist shows only the plain-language fact and fix now, never the
+    raw title, for a failing check."""
+    html_out = render_html(_sample_report())
+    assert "counts.total == positive + negative" not in html_out
 
 
 def test_render_html_strips_leading_numbers_from_category_display():
@@ -148,7 +159,6 @@ def test_failing_category_lists_only_its_failing_checks():
     report.add(CheckResult(Status.PASS, "Integrity", "1", "ok check", "nothing wrong here", "Agreements"))
     report.add(CheckResult(Status.FAIL, "Integrity", "1", "broken check", "it broke", "Agreements", "fix it"))
     html_out = render_html(report)
-    assert "broken check" in html_out
     assert "it broke" in html_out
     assert "ok check" not in html_out
     assert "nothing wrong here" not in html_out

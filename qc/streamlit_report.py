@@ -18,8 +18,8 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
     _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
-    _metric_fix_rows, _quality_metrics_section_html, _simplify_fact, _truncate, _truncate_short,
-    _verdict_text, render_html, render_pdf,
+    _metric_fix_rows, _quality_metrics_section_html, _short_clause, _simplify_fact, _truncate,
+    _truncate_short, _verdict_text, render_html, render_pdf,
 )
 
 def _inject_metric_css() -> None:
@@ -39,7 +39,6 @@ def _inject_metric_css() -> None:
         ".qc-result-table th, .qc-result-table td { border: 1px solid rgba(128,128,128,0.25); "
         "padding: 0.18rem 0.5rem; text-align: left; vertical-align: top; }"
         ".qc-result-table td:nth-child(1) { width: 60px; }"
-        ".qc-result-table td:nth-child(2) { width: 24%; }"
         ".qc-row-badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; "
         "color: white; font-size: 0.68rem; font-weight: 700; white-space: nowrap; }"
         ".qc-row-scope { opacity: 0.7; font-size: 0.72rem; }"
@@ -106,9 +105,11 @@ def _inject_metric_css() -> None:
         f".d-c {{ background: rgba(207,34,46,0.18); color: {RED}; outline: 1.5px solid {RED}; "
         "outline-offset: -1.5px; }}"
         ".chips { display: flex; flex-wrap: wrap; gap: 4px; }"
-        ".chips-stack { flex-direction: column; align-items: center; gap: 4px; }"
+        ".chips-stack { flex-direction: column; align-items: stretch; gap: 5px; }"
         ".chip { font-size: 0.62rem; font-weight: 700; padding: 2px 7px; border-radius: 99px; "
         "white-space: nowrap; }"
+        ".chips-stack .chip { display: block; width: 100%; text-align: left; box-sizing: border-box; "
+        "padding: 4px 9px; }"
         f".c-s {{ background: rgba(26,127,55,0.15); color: {GREEN}; }}"
         ".c-a { background: rgba(45,90,139,0.15); color: #2d5a8b; }"
         ".c-w { background: rgba(154,103,0,0.15); color: #9a6700; }"
@@ -152,19 +153,16 @@ def _result_table_html(results) -> str:
                          if r.scope and len(items) > 1 else "")
             fact_lines.append(f"<div>{scope_bit}{fact}</div>")
         fix = next((r.fix for r in items if r.fix), "")
-        fix_html = f'<div class="qc-row-fix">Suggested fix: {_html.escape(fix)}</div>' if fix else ""
+        fix_html = f'<div class="qc-row-fix">Fix: {_html.escape(_short_clause(fix))}</div>' if fix else ""
         result_html = "".join(fact_lines) + fix_html
         worst = next((r.status.value for r in items if r.status == Status.FAIL),
                       items[0].status.value)
-        scope_html = (f' <span class="qc-row-scope">({_html.escape(items[0].scope)})</span>'
-                      if len(items) == 1 and items[0].scope else "")
         rows.append(
             f'<tr><td><span class="qc-row-badge" style="background:{color.get(worst, GREEN)}">'
             f'{worst}</span></td>'
-            f"<td>{_html.escape(title)}{scope_html}</td>"
             f"<td>{result_html}</td></tr>"
         )
-    return ('<table class="qc-result-table"><tr><th>Status</th><th>Check</th><th>Result</th></tr>'
+    return ('<table class="qc-result-table"><tr><th>Status</th><th>Result</th></tr>'
             + "".join(rows) + "</table>")
 
 
