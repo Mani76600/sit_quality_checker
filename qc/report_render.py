@@ -120,6 +120,24 @@ def _gated_critical_metrics(quality_metrics: dict) -> list[str]:
             if m.get("gate") and m.get("grade") == "critical"]
 
 
+def _verdict_text(n_fail: int, gated_critical: list[str]) -> tuple[str, str, bool]:
+    """(headline, subline, is_failing) - a short bold headline plus a
+    compact subline of only the counts that are actually non-zero (never
+    "0 check(s) failed" when what actually failed was a quality metric, or
+    vice versa), and no trailing "needs fixes before this output ships"
+    sentence - the reference dashboards' own verdict is just as terse."""
+    is_failing = bool(n_fail or gated_critical)
+    if not is_failing:
+        return "Ready to ship", "Every quality check passed for this run.", False
+    bits = []
+    if n_fail:
+        bits.append(f"{n_fail} failed check{'s' if n_fail != 1 else ''}")
+    if gated_critical:
+        n = len(gated_critical)
+        bits.append(f"{n} quality metric{'s' if n != 1 else ''} below threshold")
+    return "Not ready to ship", " · ".join(bits), True
+
+
 # ------------------------------------------------------------ HTML charts --
 
 def _donut_svg(pct: float | None, size: int = 92, stroke: int = 12) -> str:
@@ -713,12 +731,7 @@ def render_html(report: RunReport) -> str:
     counts = report.counts()
     n_fail = counts.get("FAIL", 0)
     gated_critical = _gated_critical_metrics(report.quality_metrics)
-    if n_fail or gated_critical:
-        extra = (f" + {len(gated_critical)} quality metric(s) below gate threshold "
-                 f"({', '.join(gated_critical)})") if gated_critical else ""
-        verdict = ("FAILING", f"{n_fail} check(s) failed{extra} - needs fixes before this output ships.")
-    else:
-        verdict = ("CLEAN", "Every quality check passed for this run.")
+    headline, subline, is_failing = _verdict_text(n_fail, gated_critical)
 
     core, additional = _core_and_additional(report)
 
@@ -742,8 +755,10 @@ def render_html(report: RunReport) -> str:
   h1 {{ font-size: 1.3rem; margin: 0 0 0.15rem; color: {ACCENT}; }}
   h2 {{ margin: 0; font-size: 1rem; }}
   .path {{ color: {MUTED}; font-size: 0.8rem; margin-bottom: 1rem; }}
-  .verdict {{ display: inline-block; padding: 0.45rem 0.9rem; border-radius: 6px; font-weight: 600;
-              margin-bottom: 1rem; font-size: 0.85rem; }}
+  .verdict {{ display: inline-block; padding: 0.5rem 1rem; border-radius: 6px; text-align: center;
+              margin-bottom: 1rem; }}
+  .verdict b {{ display: block; font-size: 1.05rem; line-height: 1.2; }}
+  .verdict span {{ font-size: 0.78rem; opacity: 0.92; }}
   .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                 gap: 12px; margin-bottom: 1.3rem; align-items: start; }}
   .stat-card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px 14px; }}
@@ -880,8 +895,9 @@ def render_html(report: RunReport) -> str:
 <h1>SIT Output Quality Report</h1>
 <div class="path"><strong>{html.escape(report.label)}</strong></div>
 {_generation_info_html(report.generation_info)}
-<div class="verdict" style="background:{RED if (n_fail or gated_critical) else GREEN};color:white;">
-  {verdict[0]}: {html.escape(verdict[1])}
+<div class="verdict" style="background:{RED if is_failing else GREEN};color:white;">
+  <b>{html.escape(headline)}</b>
+  <span>{html.escape(subline)}</span>
 </div>
 
 {_gates_summary_html(report, core, additional)}
@@ -957,17 +973,13 @@ def render_pdf(report: RunReport) -> bytes:
     counts = report.counts()
     n_fail = counts.get("FAIL", 0)
     gated_critical = _gated_critical_metrics(report.quality_metrics)
-    if n_fail or gated_critical:
-        extra = (f" + {len(gated_critical)} quality metric(s) below gate threshold "
-                 f"({', '.join(gated_critical)})") if gated_critical else ""
-        verdict = f"FAILING - {n_fail} check(s) failed{extra}, needs fixes before this output ships."
-        color = (207, 34, 46)
-    else:
-        verdict = "CLEAN - every quality check passed for this run."
-        color = (26, 127, 55)
-    pdf.set_font("Helvetica", "B", 11)
+    headline, subline, is_failing = _verdict_text(n_fail, gated_critical)
+    color = (207, 34, 46) if is_failing else (26, 127, 55)
+    pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(*color)
-    pdf.multi_cell(0, 7, _clean(verdict), new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 7, _clean(headline), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.multi_cell(0, 5, _clean(subline), new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(0, 0, 0)
     pdf.ln(1)
 

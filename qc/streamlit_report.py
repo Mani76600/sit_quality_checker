@@ -18,7 +18,7 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
     _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
-    _quality_metrics_section_html, _truncate, _truncate_short, render_html, render_pdf,
+    _quality_metrics_section_html, _truncate, _truncate_short, _verdict_text, render_html, render_pdf,
 )
 
 def _inject_metric_css() -> None:
@@ -594,11 +594,9 @@ def render_report(report: RunReport) -> None:
 
     n_fail, n_warn = counts.get("FAIL", 0), counts.get("WARN", 0)
     gated_critical = _gated_critical_metrics(report.quality_metrics)
-    if n_fail or gated_critical:
-        extra = (f" plus {len(gated_critical)} quality metric(s) below gate threshold "
-                 f"({', '.join(gated_critical)})") if gated_critical else ""
-        st.error(f"❌ {n_fail} check(s) failed{extra} — needs fixes before this output ships. "
-                 f"See the checklist below for exactly which ones.")
+    _headline, _subline, _is_failing = _verdict_text(n_fail, gated_critical)
+    if _is_failing:
+        st.error(f"❌ **{_headline}** — {_subline}")
         failed_cats = [c for c in ordered_categories if cat_effective[c][0] == Status.FAIL.value]
         links = " &nbsp;·&nbsp; ".join(
             f'<a href="#{cat_anchor[c]}">❌ {_display_category(c)}</a>' for c in failed_cats)

@@ -15,7 +15,7 @@ report_render.py:
 import re
 
 from qc.models import CheckResult, RunReport, Status
-from qc.report_render import _display_category, render_html, render_pdf
+from qc.report_render import _display_category, _verdict_text, render_html, render_pdf
 
 
 def test_display_category_strips_various_leading_number_shapes():
@@ -153,3 +153,47 @@ def test_failing_category_lists_only_its_failing_checks():
     assert "ok check" not in html_out
     assert "nothing wrong here" not in html_out
     assert ">1 / 2<" in html_out  # 1 passed out of 2 total in this category
+
+
+def test_verdict_text_never_shows_zero_failed_checks_when_a_quality_metric_gated_it():
+    """Real bug: with 0 FAIL checks but a quality metric gated-critical, the
+    old verdict read "FAILING: 0 check(s) failed + 1 quality metric(s)...
+    needs fixes before this output ships." - confusing (0 failed, yet
+    FAILING) and verbose. The subline must only mention the counts that are
+    actually non-zero."""
+    headline, subline, is_failing = _verdict_text(0, ["Negative Observed-Label Wording Uniqueness"])
+    assert is_failing is True
+    assert "0" not in subline
+    assert "failed check" not in subline
+    assert "1 quality metric" in subline
+    assert "needs fixes before this output ships" not in subline
+
+
+def test_verdict_text_shows_failed_checks_only_when_no_gated_metric():
+    headline, subline, is_failing = _verdict_text(3, [])
+    assert is_failing is True
+    assert subline == "3 failed checks"
+    assert "needs fixes before this output ships" not in subline
+
+
+def test_verdict_text_clean_when_nothing_failed():
+    headline, subline, is_failing = _verdict_text(0, [])
+    assert is_failing is False
+    assert headline == "Ready to ship"
+
+
+def test_render_html_verdict_omits_zero_count_when_quality_metric_gated_it():
+    report = RunReport(label="Test SIT / Version_20260101_0000", version_dir="C:\\out\\Version_20260101_0000")
+    report.quality_metrics = {
+        "negative_label_uniqueness": {
+            "label": "Negative Observed-Label Wording Uniqueness",
+            "gate": True, "grade": "critical", "score": 0.1,
+            "detail": "100 distinct label(s) / 1000 located negative SIT occurrence(s) = 0.100.",
+            "sample_note": "Every located negative SIT occurrence",
+        },
+    }
+    html_out = render_html(report)
+    assert "0 check(s) failed" not in html_out
+    assert "0 failed check" not in html_out
+    assert "needs fixes before this output ships" not in html_out
+    assert "Not ready to ship" in html_out
