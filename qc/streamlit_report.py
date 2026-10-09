@@ -18,7 +18,7 @@ from qc.detail_format import split_detail
 from qc.models import RunReport, Status
 from qc.report_render import (
     _business_context_spread_html, _gated_critical_metrics, _gates_summary_html,
-    _metric_fix_rows, _quality_metrics_section_html, _short_fix_phrase, _truncate, _truncate_short,
+    _metric_fix_rows, _quality_metrics_section_html, _simplify_fact, _truncate, _truncate_short,
     _verdict_text, render_html, render_pdf,
 )
 
@@ -184,14 +184,13 @@ _TAG_BG = {"t-crit": "rgba(207,34,46,0.12)", "t-weak": "rgba(154,103,0,0.14)"}
 
 def _fix_list_html(grouped: dict, categories: list[str], quality_metrics: dict | None = None) -> str:
     """One compact row per issue - a severity tag (QC / WEAK / CRITICAL)
-    plus a single short, actionable line, hard-truncated to one line via
-    CSS ellipsis with the full problem + fix text on hover. No separate
-    "what's wrong" column - a reader wants a short punch list to scan, not
-    two columns of prose per issue; the full detail is still one click
-    away in the checklist below. The Streamlit-rendered twin of
-    report_render.py's own _fix_list_html (same row logic, reused
-    directly, just emitted as inline-styled HTML instead of CSS classes
-    since this is injected straight into the Streamlit page)."""
+    plus a single short line stating the concrete fact (the actual numbers/
+    fields that are wrong), hard-truncated to one line via CSS ellipsis
+    only when the fact itself needs more room, with the full problem+fix
+    text on hover. The Streamlit-rendered twin of report_render.py's own
+    _fix_list_html (same row logic, reused directly, just emitted as
+    inline-styled HTML instead of CSS classes since this is injected
+    straight into the Streamlit page)."""
     import html as _html
     groups: dict[tuple[str, str], list] = {}
     order: list[tuple[str, str]] = []
@@ -205,23 +204,26 @@ def _fix_list_html(grouped: dict, categories: list[str], quality_metrics: dict |
                 order.append(key)
             groups[key].append(r)
 
+    # (tag, tag_css_class, display_text, full_text_for_hover)
     rows: list[tuple[str, str, str, str]] = []
     for category, title in order:
         items = groups[(category, title)]
         first = items[0]
         lead, _examples = split_detail(first.detail)
         lead = lead.rstrip().rstrip(",")
-        rows.append(("QC", "t-crit", lead or title, first.fix or "See the checklist for detail."))
-    rows.extend(_metric_fix_rows(quality_metrics or {}))
+        fix = first.fix or "See the checklist for detail."
+        rows.append(("QC", "t-crit", _simplify_fact(lead or title), f"{lead or title} — {fix}"))
+    for tag, cls, what, do in _metric_fix_rows(quality_metrics or {}):
+        rows.append((tag, cls, do, f"{what} — {do}"))
     if not rows:
         return ""
 
     row_html = [f'<div style="font-size:0.95rem;font-weight:700;margin:0.3rem 0 0.2rem;">'
                 f'Fix these {len(rows)}</div>']
-    for tag, cls, what, do in rows:
+    for tag, cls, display, full_text in rows:
         color = _TAG_COLORS.get(cls, RED)
         bg = _TAG_BG.get(cls, "rgba(207,34,46,0.12)")
-        title_attr = _html.escape(f"{_truncate(what)} — {_truncate(do)}")
+        title_attr = _html.escape(_truncate(full_text))
         row_html.append(
             '<div style="display:grid;grid-template-columns:58px minmax(0,1fr);gap:10px;'
             f'align-items:center;padding:5px 2px;border-top:1px solid rgba(128,128,128,0.2);">'
@@ -229,7 +231,7 @@ def _fix_list_html(grouped: dict, categories: list[str], quality_metrics: dict |
             f'text-transform:uppercase;padding:3px 6px;border-radius:5px;text-align:center;'
             f'background:{bg};color:{color};">{tag}</span>'
             f'<span title="{title_attr}" style="font-weight:600;font-size:0.8rem;white-space:nowrap;'
-            f'overflow:hidden;text-overflow:ellipsis;">{_html.escape(_short_fix_phrase(do))}</span>'
+            f'overflow:hidden;text-overflow:ellipsis;">{_html.escape(display)}</span>'
             "</div>"
         )
     return "".join(row_html)

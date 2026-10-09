@@ -350,34 +350,52 @@ def _metric_fix_rows(quality_metrics: dict) -> list[tuple[str, str, str, str]]:
 
 _CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
 
+# Generic wording cleanups applied to a check's concrete fact text (the
+# "lead" - e.g. "export_summary.json claims counts.positive=5625 but 5900
+# file(s) are actually present in raw_doc/ (delta +275)") to get it down
+# to the shortest line that still states the actual numbers/fields - never
+# a hardcoded per-check rewrite (there are dozens of distinct checks), just
+# narration words that add no information once the tag already says "QC":
+# the "<file> claims" lead-in, "(s)" plurals, "actually", and a redundant
+# slash before a trailing "(delta ...)" aside.
+_FACT_CLEANUP = [
+    (re.compile(r"^\S+\.(?:json|jsonl)\s+claims\s+", re.IGNORECASE), ""),
+    (re.compile(r"\bfile\(s\)", re.IGNORECASE), "files"),
+    (re.compile(r"\brow\(s\)", re.IGNORECASE), "rows"),
+    (re.compile(r"\bvalue\(s\)", re.IGNORECASE), "values"),
+    (re.compile(r"\bdocument\(s\)", re.IGNORECASE), "documents"),
+    (re.compile(r"\bare actually present in\b", re.IGNORECASE), "present in"),
+    (re.compile(r"\bis actually present in\b", re.IGNORECASE), "present in"),
+    (re.compile(r"\bactually\s+"), ""),
+    (re.compile(r"/\s*\("), " ("),
+    (re.compile(r"\s{2,}"), " "),
+]
 
-def _short_fix_phrase(action: str, limit: int = 56) -> str:
-    """As few words as it takes to stay a clear, standalone instruction -
-    not a hard "3-4 words" rule, since our suggested-fix text is built
-    around real field/file names (e.g. "normalized_context.ground_truth.
-    true") that can't be shortened without losing which field is wrong.
-    Drops everything after the first " - " (every check's fix text puts
-    the justification clause there, e.g. "Reconcile X with Y - they must
-    describe the same document set" -> "Reconcile X with Y"), then falls
-    back to a hard character truncation only if that's still long."""
-    text = (action or "").strip()
-    m = _CLAUSE_BREAK_RE.search(text)
-    if m:
-        text = text[:m.start()].strip()
-    return _truncate_short(text, limit)
+
+def _simplify_fact(text: str, limit: int = 100) -> str:
+    """The shortest line that still states the actual numbers/fields -
+    strip narration, not information. Only hard-truncates (via ellipsis)
+    when the fact itself genuinely needs more than one line's worth of
+    distinct numbers/names to stay meaningful (e.g. comparing counts
+    across two named files) - length varies by how much the fact actually
+    requires, never an arbitrary word-count cap."""
+    text = (text or "").strip()
+    for pattern, repl in _FACT_CLEANUP:
+        text = pattern.sub(repl, text)
+    return _truncate_short(text.strip(), limit)
 
 
 def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str:
-    """One compact row per issue - a severity tag plus a single short,
-    actionable line (what to actually do), hard-truncated to one line via
-    CSS ellipsis with the full problem + fix text available on hover. No
-    separate "what's wrong" column: at real-report scale a reader wants a
-    short punch list to scan, not two columns of prose per issue - the
-    full detail (examples, scope, pass rate) is still one click away in
-    the checklist below. Covers both failing checklist checks (tagged QC)
-    and Weak/Critical quality metrics (tagged WEAK/CRITICAL), since both
-    are genuine "fix this" items even though only a gated-critical metric
-    flips the overall verdict."""
+    """One compact row per issue - a severity tag plus a single short line
+    stating the concrete fact (the actual numbers/fields that are wrong),
+    hard-truncated to one line via CSS ellipsis only when the fact itself
+    needs more room, with the full problem + fix text available on hover.
+    The fact alone is the point: a reader scanning "counts.positive=5625
+    but 5900 files present (delta +275)" already knows exactly what's
+    wrong without a separate "regenerate X" sentence restating it. Quality
+    metric rows (tagged WEAK/CRITICAL) show their curated short fix hint
+    instead, since their own fact (score vs. threshold) is already visible
+    in the Quality Metrics table above."""
     cat_results = {category: results for category, results in core + additional}
     groups: dict[tuple[str, str], list] = {}
     order: list[tuple[str, str]] = []
@@ -391,22 +409,24 @@ def _fix_list_html(core, additional, quality_metrics: dict | None = None) -> str
                 order.append(key)
             groups[key].append(r)
 
+    # (tag, tag_css_class, display_text, full_text_for_hover)
     rows: list[tuple[str, str, str, str]] = []
     for category, title in order:
         items = groups[(category, title)]
         first = items[0]
         lead, _examples = split_detail(first.detail)
         lead = lead.rstrip().rstrip(",")
-        rows.append(("QC", "t-crit", lead or title, first.fix or "See the checklist for detail."))
-    rows.extend(_metric_fix_rows(quality_metrics or {}))
+        fix = first.fix or "See the checklist for detail."
+        rows.append(("QC", "t-crit", _simplify_fact(lead or title), f"{lead or title} — {fix}"))
+    for tag, cls, what, do in _metric_fix_rows(quality_metrics or {}):
+        rows.append((tag, cls, do, f"{what} — {do}"))
     if not rows:
         return ""
 
     row_html = "".join(
         f'<div class="fixrow"><span class="tag {cls}">{tag}</span>'
-        f'<span class="fr-action" title="{html.escape(_truncate(what))} &mdash; {html.escape(_truncate(do))}">'
-        f'{html.escape(_short_fix_phrase(do))}</span></div>'
-        for tag, cls, what, do in rows
+        f'<span class="fr-action" title="{html.escape(_truncate(full_text))}">{html.escape(display)}</span></div>'
+        for tag, cls, display, full_text in rows
     )
     return f'<div class="card"><div class="cardhead head"><h2>Fix these {len(rows)}</h2></div>{row_html}</div>'
 
