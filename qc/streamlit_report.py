@@ -148,12 +148,16 @@ def _result_table_html(results) -> str:
         for r in items:
             lead, _examples = split_detail(r.detail)
             lead = lead.rstrip().rstrip(",")
-            fact = _html.escape(_simplify_fact(lead or title, limit=110))
+            fact_full = lead or title
+            fact = _html.escape(_simplify_fact(fact_full, limit=150))
             scope_bit = (f'<span class="qc-row-scope">{_html.escape(r.scope)}:</span> '
                          if r.scope and len(items) > 1 else "")
-            fact_lines.append(f"<div>{scope_bit}{fact}</div>")
+            # title= carries the untruncated fact, so a rare long one is
+            # still fully readable on hover, never cut off for good.
+            fact_lines.append(f'<div title="{_html.escape(_truncate(fact_full))}">{scope_bit}{fact}</div>')
         fix = next((r.fix for r in items if r.fix), "")
-        fix_html = f'<div class="qc-row-fix">Fix: {_html.escape(_short_clause(fix))}</div>' if fix else ""
+        fix_html = (f'<div class="qc-row-fix" title="{_html.escape(_truncate(fix))}">'
+                    f'Fix: {_html.escape(_short_clause(fix))}</div>' if fix else "")
         result_html = "".join(fact_lines) + fix_html
         worst = next((r.status.value for r in items if r.status == Status.FAIL),
                       items[0].status.value)

@@ -67,7 +67,11 @@ def _truncate_short(text: str, limit: int) -> str:
     text = (text or "").strip().rstrip(",")
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip().rstrip(",") + "…"
+    cut = text[:limit]
+    last_space = cut.rfind(" ")
+    if last_space > limit * 0.6:  # don't back up past a word boundary that isn't close to the limit
+        cut = cut[:last_space]
+    return cut.rstrip().rstrip(",") + "…"
 
 
 def _category_sort_key(category: str):
@@ -361,10 +365,12 @@ _CLAUSE_BREAK_RE = re.compile(r"\s+-\s+")
 # narration; only the verb "claims" is noise.
 _FACT_CLEANUP = [
     (re.compile(r"^(\S+\.(?:json|jsonl))\s+claims\s+", re.IGNORECASE), r"\1: "),
-    # "counts.positive=5625 but 5900 files..." -> "...=5625 ≠ 5900 files..." -
-    # a mismatch between two numbers reads as a mismatch at a glance with
-    # "!=" instead of the word "but", which doesn't say which way it's wrong.
-    (re.compile(r"(=[\d,]+)\s+but\s+(?=[\d,]+\b)"), "\\1 ≠ "),
+    # "counts.positive=5625 but 5900 files..." -> "counts.positive: claimed
+    # 5625, actual 5900 files..." - without this, "5625 ≠ 5900" alone
+    # doesn't say which number is the claim and which is reality; spelling
+    # out "claimed"/"actual" makes that unambiguous at a glance.
+    (re.compile(r"\b([\w.]+)=([\d,]+)\s+but\s+([\d,]+)\s+"), r"\1: claimed \2, actual \3 "),
+
     (re.compile(r"\bfile\(s\)", re.IGNORECASE), "files"),
     (re.compile(r"\brow\(s\)", re.IGNORECASE), "rows"),
     (re.compile(r"\bvalue\(s\)", re.IGNORECASE), "values"),
@@ -377,7 +383,7 @@ _FACT_CLEANUP = [
 ]
 
 
-def _simplify_fact(text: str, limit: int = 100) -> str:
+def _simplify_fact(text: str, limit: int = 150) -> str:
     """The shortest line that still states the actual numbers/fields -
     strip narration, not information. Only hard-truncates (via ellipsis)
     when the fact itself genuinely needs more than one line's worth of
@@ -390,7 +396,7 @@ def _simplify_fact(text: str, limit: int = 100) -> str:
     return _truncate_short(text.strip(), limit)
 
 
-def _short_clause(text: str, limit: int = 100) -> str:
+def _short_clause(text: str, limit: int = 180) -> str:
     """A suggested-fix sentence, cut at its first " - " (every check's fix
     text puts the justification clause there, e.g. "Reconcile X with Y -
     they must describe the same document set" -> "Reconcile X with Y") so
@@ -807,11 +813,17 @@ def _fail_group_html(title: str, items: list) -> str:
     for r in items:
         lead, _examples = split_detail(r.detail)
         lead = lead.rstrip().rstrip(",")
-        fact = html.escape(_simplify_fact(lead or title, limit=110))
+        fact_full = lead or title
+        fact = html.escape(_simplify_fact(fact_full, limit=150))
         scope_bit = f'<span class="row-scope">{html.escape(r.scope)}:</span> ' if r.scope and len(items) > 1 else ""
-        lines.append(f"<div>{scope_bit}{fact}</div>")
+        # title= carries the untruncated fact, so a line that does get
+        # shortened (a rare, genuinely long fact - several distinct numbers/
+        # file names at once) is still fully readable on hover, not cut off
+        # for good.
+        lines.append(f'<div title="{html.escape(_truncate(fact_full))}">{scope_bit}{fact}</div>')
     fix = next((r.fix for r in items if r.fix), "")
-    fix_html = f'<div class="fix">Fix: {html.escape(_short_clause(fix))}</div>' if fix else ""
+    fix_html = (f'<div class="fix" title="{html.escape(_truncate(fix))}">Fix: {html.escape(_short_clause(fix))}</div>'
+                if fix else "")
     return f'<div class="ckfail-item">{"".join(lines)}{fix_html}</div>'
 
 
